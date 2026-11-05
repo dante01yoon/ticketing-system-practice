@@ -268,6 +268,9 @@ were handed and what counts as done. If you are setting up a world pack for your
 - **review** (`dev-review`): 읽기 전용. 발견 사항은 파일 위치·근거와 함께 lead에게 보낸다.
 - 남의 폴더를 고쳐야 하면 직접 고치지 말고 lead에게 큐(`rig queue create`)로 요청한다.
 
+## 실행
+- 환경 준비·테스트 실행: `uv sync` 후 `uv run pytest` (루트 `pyproject.toml`, Python 3.12, 개발용 pytest·pyyaml). 시스템 python/pip를 직접 쓰지 않는다.
+
 ## 작업 순서: 테스트 먼저(RED) → 구현(GREEN)
 1. lead가 요구사항·API 계약을 정해 test와 server에 같은 내용으로 배정한다.
 2. test가 실패하는 테스트를 쓰고 RED(실패 이유가 '미구현'인지)를 lead에게 보고한다.
