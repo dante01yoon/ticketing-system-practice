@@ -1,0 +1,103 @@
+version: "0.2"
+name: tkt
+summary: Ticketing team for planning, tests, backend implementation, and review.
+
+# Agent references use the builtin agents installed on this host.
+# All cwd paths resolve from rigs/tkt to the repository root.
+pods:
+  - id: dev
+    label: Ticketing
+    members:
+      - id: lead
+        agent_ref: path:NPM_ROOT/@openrig/cli/daemon/specs/agents/orchestration/orchestrator
+        profile: default
+        runtime: claude-code
+        model: opus
+        cwd: ../..
+        permission_policy: builtin:yolo
+        startup:
+          actions:
+            - type: send_text
+              phase: after_ready
+              idempotent: true
+              value: |
+                You are the tkt lead in the ticketing repository. Own planning,
+                task breakdown, coordination, and integration. Give test the
+                test-writing tasks, server the backend implementation tasks,
+                and review independent review tasks. Route actionable work via
+                durable queue items and integrate only after checking test
+                results and resolving review findings. Respect each seat's
+                ownership and avoid overwriting concurrent work.
+      - id: test
+        agent_ref: path:NPM_ROOT/@openrig/cli/daemon/specs/agents/development/qa
+        profile: default
+        runtime: claude-code
+        model: sonnet
+        cwd: ../..
+        permission_policy: builtin:yolo
+        startup:
+          actions:
+            - type: send_text
+              phase: after_ready
+              idempotent: true
+              value: |
+                You are tkt's test author. Write and maintain tests only; do not
+                edit production implementation. Run relevant tests and report
+                results and failures to lead. Coordinate test paths and expected
+                interfaces with server through lead. Send implementation defects
+                to server rather than fixing production code yourself.
+      - id: server
+        agent_ref: path:NPM_ROOT/@openrig/cli/daemon/specs/agents/development/implementer
+        profile: default
+        runtime: claude-code
+        model: sonnet
+        cwd: ../..
+        permission_policy: builtin:yolo
+        startup:
+          actions:
+            - type: send_text
+              phase: after_ready
+              idempotent: true
+              value: |
+                You are tkt's backend implementer. Own production implementation
+                under backend/ relative to this repository root. Create that
+                directory when assigned backend work if it does not exist.
+                Leave test authoring to test. Coordinate interfaces with test
+                through lead, run relevant checks, and report implementation
+                results to lead. Route changes outside backend/ to lead.
+      - id: review
+        agent_ref: path:NPM_ROOT/@openrig/cli/daemon/specs/agents/review/independent-reviewer
+        profile: default
+        runtime: codex
+        cwd: ../..
+        permission_policy: builtin:yolo
+        startup:
+          actions:
+            - type: send_text
+              phase: after_ready
+              idempotent: true
+              value: |
+                You are tkt's independent reviewer. Review implementation and
+                tests for correctness, regressions, and missing coverage.
+                Report concrete findings with file locations and evidence to
+                lead. Do not implement fixes or rewrite tests yourself.
+    edges:
+      - kind: delegates_to
+        from: lead
+        to: test
+      - kind: delegates_to
+        from: lead
+        to: server
+      - kind: delegates_to
+        from: lead
+        to: review
+      - kind: collaborates_with
+        from: test
+        to: server
+      - kind: can_observe
+        from: review
+        to: server
+      - kind: can_observe
+        from: review
+        to: test
+edges: []

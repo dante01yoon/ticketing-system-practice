@@ -1,0 +1,6 @@
+{
+  "algorithm": "sha256",
+  "files": {
+    "tests/test_smoke.py": "09b57af9eb9c82a19795528b996df79f0a63afe8ae1c75b0ac38fc9b853aa6ad"
+  }
+}
