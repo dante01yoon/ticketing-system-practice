@@ -1,6 +1,7 @@
 {
   "algorithm": "sha256",
   "files": {
+    "tests/capacity/test_capacity.py": "24d9a9980e2bf0b296417bf97f37f72bf7680e0b9a927b19cb5596d922b6ede4",
     "tests/conftest.py": "99957e7792f7606902b1c000716c5b8365520e6b1b5c61fc214ddbd0883b0649",
     "tests/contract/test_openapi.py": "5e13fcfc0802501848effa60b624f860973c26cff6c0829cb54bb6ade7e8668b",
     "tests/test_smoke.py": "09b57af9eb9c82a19795528b996df79f0a63afe8ae1c75b0ac38fc9b853aa6ad"
