@@ -63,6 +63,7 @@ paths:
       summary: 좌석 하나를 5분 동안 홀드 (US-03)
       description: |
         AVAILABLE이거나 만료된 HELD인 좌석만 홀드할 수 있다. 만료 시각 = 홀드 시각 + 5분.
+        홀드 시각(held_at)과 만료 판단은 좌석 잠금을 얻은 뒤의 현재 시각을 쓴다.
         같은 좌석에 동시 요청이 오면 하나만 201, 나머지는 409 SEAT_ALREADY_HELD.
       parameters:
         - $ref: "#/components/parameters/SeatId"
@@ -100,6 +101,7 @@ paths:
       summary: 모의 결제로 예매 확정 (US-04)
       description: |
         요청한 사용자가 만료 전에 홀드한 좌석만 확정할 수 있다. 성공하면 좌석은 SOLD가 된다.
+        만료 여부는 좌석 잠금을 얻은 뒤의 현재 시각으로 판단한다(대기 중 만료되면 409 HOLD_EXPIRED).
         한 좌석에는 예매가 하나만 생긴다. 동시·중복 확정의 패배자는 409 SEAT_ALREADY_SOLD.
       parameters:
         - $ref: "#/components/parameters/XUserId"
@@ -144,6 +146,13 @@ paths:
                   value: { code: HOLD_EXPIRED, message: 홀드가 만료되었습니다. }
                 sold:
                   value: { code: SEAT_ALREADY_SOLD, message: 이미 판매된 좌석입니다. }
+        "422":
+          description: "`VALIDATION_ERROR`: 요청 본문 형식 오류 (JSON 아님, seat_id 누락·null·문자열 아님)"
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+              example: { code: VALIDATION_ERROR, message: 요청 형식이 올바르지 않습니다. }
 
 components:
   parameters:
@@ -256,6 +265,7 @@ components:
         - HOLD_REQUIRED
         - HOLD_EXPIRED
         - HOLD_NOT_OWNED
+        - VALIDATION_ERROR
 
     Error:
       type: object
