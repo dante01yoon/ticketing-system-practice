@@ -4,3 +4,4 @@ __pycache__/
 .pytest_cache/
 dist/
 .env
+.claude/settings.local.json
