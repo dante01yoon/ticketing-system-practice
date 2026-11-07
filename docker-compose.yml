@@ -15,5 +15,55 @@ services:
     volumes:
       - pgdata:/var/lib/postgresql/data
 
+  app1:
+    build:
+      context: .
+      dockerfile: deploy/app.Dockerfile
+    environment:
+      APP_ID: app1
+      DATABASE_URL: postgresql+psycopg://ticketing:ticketing@db:5432/ticketing
+      DB_POOL_SIZE: "8"
+      DB_MAX_OVERFLOW: "4"
+    depends_on:
+      db:
+        condition: service_healthy
+
+  app2:
+    build:
+      context: .
+      dockerfile: deploy/app.Dockerfile
+    environment:
+      APP_ID: app2
+      DATABASE_URL: postgresql+psycopg://ticketing:ticketing@db:5432/ticketing
+      DB_POOL_SIZE: "8"
+      DB_MAX_OVERFLOW: "4"
+    depends_on:
+      db:
+        condition: service_healthy
+
+  app3:
+    build:
+      context: .
+      dockerfile: deploy/app.Dockerfile
+    environment:
+      APP_ID: app3
+      DATABASE_URL: postgresql+psycopg://ticketing:ticketing@db:5432/ticketing
+      DB_POOL_SIZE: "8"
+      DB_MAX_OVERFLOW: "4"
+    depends_on:
+      db:
+        condition: service_healthy
+
+  nginx:
+    image: nginx:1.27.5-alpine
+    ports:
+      - "8080:8080"
+    volumes:
+      - ./deploy/nginx/nginx.conf:/etc/nginx/nginx.conf:ro
+    depends_on:
+      - app1
+      - app2
+      - app3
+
 volumes:
   pgdata:

@@ -1,3 +1,4 @@
+import os
 import re
 import uuid
 from datetime import datetime, timedelta
@@ -6,7 +7,7 @@ from typing import Callable, Literal
 from fastapi import Depends, FastAPI, Request
 from fastapi.exceptions import RequestValidationError
 from fastapi.responses import JSONResponse
-from pydantic import BaseModel
+from pydantic import BaseModel, field_validator
 from sqlalchemy import select
 from sqlalchemy.exc import IntegrityError
 from starlette.exceptions import HTTPException as StarletteHTTPException
@@ -19,8 +20,17 @@ from .models import Booking, Concert, IdempotencyKey, Seat
 HOLD_TTL = timedelta(minutes=5)
 
 
+def _reject_nul(v: str) -> str:
+    """PostgreSQL text는 NUL(U+0000)을 못 담는다. DB까지 가면 500이 되므로 입력 단계에서 막는다."""
+    if "\x00" in v:
+        raise ValueError("NUL 문자는 쓸 수 없습니다.")
+    return v
+
+
 class BookingRequest(BaseModel):
     seat_id: str
+
+    _no_nul = field_validator("seat_id")(_reject_nul)
 
 
 async def booking_request(
@@ -36,6 +46,8 @@ async def booking_request(
 class CallbackRequest(BaseModel):
     booking_id: str
     result: Literal["SUCCEEDED", "FAILED"]
+
+    _no_nul = field_validator("booking_id")(_reject_nul)
 
 
 def _hold_body(seat: Seat, held_at: datetime) -> dict:
@@ -144,7 +156,7 @@ def _is_live_hold(seat: Seat, now: datetime) -> bool:
 
 
 def _lock_seat(db, seat_id: str) -> Seat:
-    seat = db.execute(select(Seat).where(Seat.id == seat_id).with_for_update()).scalar_one_or_none()
+    seat = None if "\x00" in seat_id else db.execute(select(Seat).where(Seat.id == seat_id).with_for_update()).scalar_one_or_none()
     if seat is None:
         raise ApiError(404, "SEAT_NOT_FOUND", "좌석을 찾을 수 없습니다.")
     return seat
@@ -161,6 +173,27 @@ def lock_clock(request: Request) -> Callable[[], datetime]:
     """좌석 잠금을 얻은 '뒤에' 호출해 시각을 읽는다 (잠금 대기 중 만료되는 홀드를 놓치지 않기 위함).
     테스트의 app.dependency_overrides[get_now] 도 호출 시점에 반영된다."""
     return request.app.dependency_overrides.get(get_now, get_now)
+
+
+class AppIdMiddleware:
+    """모든 응답(처리되지 않은 예외의 500 포함)에 X-App-Id 를 붙이는 ASGI 미들웨어."""
+
+    def __init__(self, app):
+        self.app = app
+
+    async def __call__(self, scope, receive, send):
+        app_id = os.environ.get("APP_ID")
+        if scope["type"] != "http" or not app_id:
+            return await self.app(scope, receive, send)
+
+        async def send_with_id(message):
+            if message["type"] == "http.response.start":
+                headers = [(k, v) for k, v in message.get("headers", []) if k.lower() != b"x-app-id"]
+                headers.append((b"x-app-id", app_id.encode()))
+                message = {**message, "headers": headers}
+            await send(message)
+
+        await self.app(scope, receive, send_with_id)
 
 
 def create_app() -> FastAPI:
@@ -188,7 +221,7 @@ def create_app() -> FastAPI:
     @app.get("/concerts/{concert_id}/seats")
     def seat_map(concert_id: str, now: datetime = Depends(get_now)):
         with SessionLocal() as db:
-            if db.get(Concert, concert_id) is None:
+            if "\x00" in concert_id or db.get(Concert, concert_id) is None:
                 raise ApiError(404, "CONCERT_NOT_FOUND", "공연을 찾을 수 없습니다.")
             seats = db.execute(select(Seat).where(Seat.concert_id == concert_id)).scalars().all()
             seats.sort(key=_seat_sort_key)
@@ -236,7 +269,7 @@ def create_app() -> FastAPI:
     @app.get("/bookings/{booking_id}")
     def get_booking(booking_id: str, user_id: str = Depends(require_user_id)):
         with SessionLocal() as db:
-            booking = db.get(Booking, booking_id)
+            booking = None if "\x00" in booking_id else db.get(Booking, booking_id)
             if booking is None or booking.user_id != user_id:
                 raise ApiError(404, "BOOKING_NOT_FOUND", "예매를 찾을 수 없습니다.")
             return _booking_body(booking)
@@ -264,6 +297,9 @@ def create_app() -> FastAPI:
                 db.flush()
             return _booking_body(booking)
 
+    # ServerErrorMiddleware(가장 바깥) 밖에 감싸야 500 응답에도 헤더가 붙는다.
+    build = app.build_middleware_stack
+    app.build_middleware_stack = lambda: AppIdMiddleware(build())
     return app
 
 

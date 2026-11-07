@@ -3,6 +3,7 @@
   "files": {
     "tests/api/apihelpers.py": "031eb78bf8ebf878f9b4e1440f49bc6b2af67d921ad9c88328c955f29043357a",
     "tests/api/conftest.py": "15eae395102fa82a118714c607ef8337fb77a7040d45a1016638ada81a195a27",
+    "tests/api/test_nul_ids.py": "76777327becadad7add10432698f6e2f8993d8d2cd54501dcb2eab24298ee83e",
     "tests/api/test_review_hardening.py": "28d92bc6192e8eef0607c097f2ef7157c56b52e387a065dac42ed46e67e722fb",
     "tests/api/test_us01_concerts.py": "7b6813c8c8f13db7f06f99e046960c7ef9b22198b2161f4ee949a50ce5ceb3aa",
     "tests/api/test_us02_seatmap.py": "c6448bb12cbd9d0d7e79a7f8e8c104447bc532efe81043693c1e322a2a24859f",
@@ -15,6 +16,8 @@
     "tests/concurrency/test_concurrent_requests.py": "05bf3f8aafe084f6737e9d8cb5d4414ea4c5f95661b852e16a0cf6dc03d09d1f",
     "tests/conftest.py": "99957e7792f7606902b1c000716c5b8365520e6b1b5c61fc214ddbd0883b0649",
     "tests/contract/test_openapi.py": "2aa4a5edeb3bb47369dff7d6be6f953857a622e8f572fc9064ac375876dd583a",
+    "tests/infra/conftest.py": "f313d6275b4580a63ab65ee4355dfd355b55725147d2e479ffcf3e5475471fd6",
+    "tests/infra/test_stack.py": "4f36054a7bcfd8c868aefb9542ee83883328a2ae8ca392a7b2159a7b85874a54",
     "tests/test_smoke.py": "09b57af9eb9c82a19795528b996df79f0a63afe8ae1c75b0ac38fc9b853aa6ad"
   }
 }

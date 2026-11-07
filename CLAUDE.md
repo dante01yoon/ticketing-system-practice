@@ -263,13 +263,16 @@ were handed and what counts as done. If you are setting up a world pack for your
 
 ## 폴더 소유
 - **test** (`dev-test`): `tests/`, `e2e/` — 테스트만 작성·실행하고 제품 코드는 고치지 않는다.
-- **server** (`dev-server`): `backend/` — 제품 구현. 테스트 파일은 고치지 않는다.
+- **server** (`dev-server`): `backend/`, `deploy/`, `docker-compose.yml` — 제품 구현과 배포 설정. 테스트 파일은 고치지 않는다.
 - **lead** (`dev-lead`): `docs/`, `scripts/`, 루트 설정(`CLAUDE.md`, `AGENTS.md`, `.claude/`, `.gitignore` 등).
 - **review** (`dev-review`): 읽기 전용. 발견 사항은 파일 위치·근거와 함께 lead에게 보낸다.
 - 남의 폴더를 고쳐야 하면 직접 고치지 말고 lead에게 큐(`rig queue create`)로 요청한다.
 
 ## 실행
 - 환경 준비·테스트 실행: `uv sync` 후 `uv run pytest` (루트 `pyproject.toml`, Python 3.12, 개발용 pytest·pyyaml). 시스템 python/pip를 직접 쓰지 않는다.
+- 모든 자리가 PostgreSQL 하나(`localhost:5432/ticketing`)를 같이 쓴다. 테스트 픽스처가 `reset_db`로 DB를 지우므로 **두 자리가 동시에 pytest를 돌리면 서로의 좌석 ID가 바뀌어 404·실패가 난다**(코드 결함 아님). 실패를 보고하기 전에 혼자 다시 돌려 확인한다.
+- `tests/infra/`는 docker compose 스택(`:8080`)을 띄우고 컨테이너를 멈췄다 켠다. 다른 자리의 테스트와 겹치지 않게 돌린다.
+- 큐 알림은 본문 미리보기가 잘린다. 일을 받으면 `rig queue show <id> --full`로 전체를 읽는다.
 
 ## 작업 순서: 테스트 먼저(RED) → 구현(GREEN)
 1. lead가 요구사항·API 계약을 정해 test와 server에 같은 내용으로 배정한다.
