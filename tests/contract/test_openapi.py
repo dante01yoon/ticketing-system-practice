@@ -121,6 +121,27 @@ def confirm_op(spec):
     return one_op(spec, "post", ["confirm", "booking", "reservation", "purchase"], None, "예매 확정")
 
 
+def op_by_id(spec, operation_id):
+    for path, item in spec["paths"].items():
+        for method, op in deref(spec, item).items():
+            if isinstance(op, dict) and op.get("operationId") == operation_id:
+                return path, method, op, deref(spec, item)
+    pytest.fail(f"operationId {operation_id} 오퍼레이션이 없습니다")
+
+
+def callback_op(spec):
+    return one_op(spec, "post", ["callback", "payment"], None, "모의 결제 콜백")
+
+
+def get_booking_op(spec):
+    return one_op(spec, "get", ["booking"], 1, "예매 조회")
+
+
+def error_codes(spec):
+    err = deref(spec, spec["components"]["schemas"]["Error"])
+    return set(deref(spec, err["properties"]["code"]).get("enum", []))
+
+
 def success(spec, op):
     r = responses(spec, op)
     codes = OK & set(r)
@@ -299,3 +320,154 @@ def test_us04_ac6_confirm_requires_user_header(spec):
 def test_us04_ac7_double_confirm_declares_conflict(spec):
     _, op, _ = confirm_op(spec)
     assert declares_any(spec, op, CONFLICT), "중복/동시 확정 패배자용 409 가 선언돼야 합니다"
+
+
+# ======================= 6장: 결제 두 단계 =======================
+IDEMPOTENCY = "idempotency-key"
+
+
+@pytest.mark.story("US-03", "AC-9")
+def test_us03_ac9_hold_declares_200_for_own_hold_and_201_for_new(spec):
+    _, op, _ = hold_op(spec)
+    r = responses(spec, op)
+    assert {"200", "201"} <= set(r), f"홀드는 200(내 기존 홀드)과 201(새 홀드)을 모두 선언해야 함: {sorted(r)}"
+    for code in ("200", "201"):
+        p = props(spec, body_schema(spec, r[code]))
+        assert has_field(p, "expire"), f"{code} 응답에 만료 시각 필드가 있어야 함: {list(p)}"
+
+
+@pytest.mark.story("US-04", "AC-1")
+def test_us04_ac1_booking_has_status_and_payment_deadline(spec):
+    _, op, _ = confirm_op(spec)
+    p = props(spec, body_schema(spec, responses(spec, op)["201"]))
+    assert "status" in p and "expires_at" in p, f"예매에 status·expires_at(결제 마감) 필요: {list(p)}"
+    assert set(p["status"].get("enum", [])) == {"PENDING", "CONFIRMED", "FAILED", "REFUND_REQUIRED"}
+    assert "201" in responses(spec, op), "확정 요청은 201(PENDING 예매 생성)"
+
+
+@pytest.mark.story("US-04", "AC-8")
+def test_us04_ac8_idempotency_key_header_required_with_400(spec):
+    _, op, item = confirm_op(spec)
+    hs = {p["name"].lower(): p for p in header_params(spec, op, item)}
+    assert IDEMPOTENCY in hs and hs[IDEMPOTENCY].get("required"), "Idempotency-Key 헤더를 required 로 선언해야 함"
+    assert "400" in responses(spec, op), "멱등 키 없음 → 400 이 선언돼야 함"
+    assert "IDEMPOTENCY_KEY_REQUIRED" in error_codes(spec)
+
+
+@pytest.mark.story("US-04", "AC-9")
+def test_us04_ac9_same_key_replay_is_documented(spec):
+    _, op, _ = confirm_op(spec)
+    text = (op.get("description") or "").lower()
+    assert "idempotency-key" in text or "멱등" in text, "같은 키 재요청 동작이 설명돼야 함"
+    assert "처음 응답" in op["description"], "같은 키 재요청은 처음 응답을 그대로 돌려준다고 적혀야 함"
+
+
+@pytest.mark.story("US-04", "AC-10")
+def test_us04_ac10_key_reuse_on_other_seat_is_422(spec):
+    _, op, _ = confirm_op(spec)
+    assert "422" in responses(spec, op), "같은 키를 다른 좌석에 쓰면 422 가 선언돼야 함"
+    assert "IDEMPOTENCY_KEY_REUSED" in error_codes(spec)
+
+
+@pytest.mark.story("US-04", "AC-11")
+def test_us04_ac11_existing_booking_returned_with_200(spec):
+    _, op, _ = confirm_op(spec)
+    r = responses(spec, op)
+    assert "200" in r, "기존 예매를 돌려주는 200 이 선언돼야 함"
+    p = props(spec, body_schema(spec, r["200"]))
+    assert "status" in p and "id" in p
+
+
+@pytest.mark.story("US-04", "AC-3")
+def test_us04_ac3_not_my_hold_is_403_with_code(spec):
+    _, op, _ = confirm_op(spec)
+    assert "403" in responses(spec, op), "남의 홀드 확정은 403 (HOLD_NOT_OWNED)"
+    assert "HOLD_NOT_OWNED" in error_codes(spec)
+
+
+@pytest.mark.story("US-04", "AC-2")
+def test_us04_ac2_error_codes_distinguish_hold_failures(spec):
+    codes = error_codes(spec)
+    assert {"HOLD_REQUIRED", "HOLD_EXPIRED", "HOLD_NOT_OWNED", "SEAT_ALREADY_SOLD", "VALIDATION_ERROR"} <= codes
+
+
+@pytest.mark.story("US-05", "AC-1")
+def test_us05_ac1_callback_operation_exists_with_booking_response(spec):
+    _, op, _ = callback_op(spec)
+    p = props(spec, body_schema(spec, responses(spec, op)["200"]))
+    assert "id" in p and "status" in p, f"콜백 200 응답은 처리 뒤 예매여야 함: {list(p)}"
+
+
+@pytest.mark.story("US-05", "AC-1")
+def test_us05_ac1_callback_request_has_booking_id_and_result_enum(spec):
+    _, op, _ = callback_op(spec)
+    schema = deref(spec, body_schema(spec, deref(spec, op["requestBody"])))
+    p = {k: deref(spec, v) for k, v in schema["properties"].items()}
+    assert "booking_id" in p and "result" in p, list(p)
+    assert set(p["result"]["enum"]) == {"SUCCEEDED", "FAILED"}
+    assert {"booking_id", "result"} <= set(schema.get("required", []))
+    assert not any("time" in k or k.endswith("_at") for k in p), "콜백 본문에 시각 필드를 두지 않는다(서버 시각만)"
+
+
+@pytest.mark.story("US-05", "AC-1")
+def test_us05_callback_needs_no_user_header(spec):
+    _, op, item = callback_op(spec)
+    assert not requires_user_header(spec, op, item), "콜백은 X-User-Id 를 요구하지 않는다"
+
+
+@pytest.mark.story("US-05", "AC-7")
+def test_us05_ac7_unknown_booking_404(spec):
+    _, op, _ = callback_op(spec)
+    assert "404" in responses(spec, op)
+    assert "BOOKING_NOT_FOUND" in error_codes(spec)
+
+
+@pytest.mark.story("US-05", "AC-8")
+def test_us05_ac8_malformed_callback_422(spec):
+    _, op, _ = callback_op(spec)
+    assert "422" in responses(spec, op)
+
+
+@pytest.mark.story("US-05", "AC-5")
+def test_us05_ac5_duplicate_callback_documented_as_noop(spec):
+    _, op, _ = callback_op(spec)
+    desc = op.get("description") or ""
+    assert "한 번" in desc and "아무것도 바꾸지 않" in desc, "중복 콜백은 무변경이라고 적혀야 함"
+
+
+@pytest.mark.story("US-05", "AC-3")
+def test_us05_ac3_booking_deadline_field_and_refund_status(spec):
+    booking = props(spec, spec["components"]["schemas"]["Booking"])
+    assert "expires_at" in booking
+    assert "REFUND_REQUIRED" in set(booking["status"].get("enum", []))
+
+
+@pytest.mark.story("US-05", "AC-9")
+def test_us05_ac9_get_booking_requires_user_and_hides_others(spec):
+    _, op, item = get_booking_op(spec)
+    assert requires_user_header(spec, op, item), "예매 조회는 X-User-Id 필수"
+    r = responses(spec, op)
+    assert {"200", "401", "404"} <= set(r), sorted(r)
+    p = props(spec, body_schema(spec, r["200"]))
+    assert "status" in p
+
+
+@pytest.mark.story("US-05", "AC-9")
+def test_error_code_enum_covers_every_documented_code(spec):
+    expected = {
+        "USER_ID_REQUIRED", "CONCERT_NOT_FOUND", "SEAT_NOT_FOUND", "SEAT_ALREADY_HELD", "SEAT_ALREADY_SOLD",
+        "HOLD_REQUIRED", "HOLD_EXPIRED", "HOLD_NOT_OWNED", "VALIDATION_ERROR",
+        "IDEMPOTENCY_KEY_REQUIRED", "IDEMPOTENCY_KEY_REUSED", "IDEMPOTENCY_KEY_INVALID", "BOOKING_NOT_FOUND",
+    }
+    assert expected <= error_codes(spec), expected - error_codes(spec)
+
+
+@pytest.mark.story("US-04", "AC-8")
+def test_us04_ac8_too_long_idempotency_key_is_400_invalid_in_contract(spec):
+    _, op, item = confirm_op(spec)
+    assert "IDEMPOTENCY_KEY_INVALID" in error_codes(spec)
+    r400 = responses(spec, op).get("400")
+    assert r400, "확정 요청에 400 응답이 선언돼야 함"
+    assert "IDEMPOTENCY_KEY_INVALID" in str(r400), "400 응답에 IDEMPOTENCY_KEY_INVALID 가 설명/예시로 있어야 함"
+    hs = {p["name"].lower(): p for p in header_params(spec, op, item)}
+    assert hs[IDEMPOTENCY]["schema"].get("maxLength") == 255, "키 최대 길이 255 가 스키마에 있어야 함"

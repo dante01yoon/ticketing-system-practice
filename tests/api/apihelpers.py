@@ -1,5 +1,6 @@
 """API 테스트 헬퍼 (Api 래퍼, 시계, 오류 단언). 픽스처는 conftest.py."""
 from concurrent.futures import ThreadPoolExecutor
+import itertools
 from datetime import datetime, timedelta, timezone
 import threading
 
@@ -7,6 +8,7 @@ from starlette.testclient import TestClient
 
 T0 = datetime(2030, 1, 1, 12, 0, 0, tzinfo=timezone.utc)
 HOLD_TTL = timedelta(minutes=5)
+AUTO = object()  # confirm(key=AUTO): 호출마다 새 멱등 키를 만든다. key=None 이면 헤더를 보내지 않는다.
 SEAT_NUMBERS = [f"{row}{n}" for row in "ABCDEFGHIJ" for n in range(1, 11)]
 
 
@@ -25,6 +27,7 @@ class Api:
         self.client = TestClient(app)
         self.concert_id = None
         self._seat_ids = {}
+        self._keys = itertools.count(1)
 
     # --- 요청 ---
     @staticmethod
@@ -40,8 +43,48 @@ class Api:
     def hold(self, seat_id, user="u1", client=None):
         return (client or self.client).post(f"/seats/{seat_id}/hold", headers=self._h(user))
 
-    def confirm(self, seat_id, user="u1", client=None):
-        return (client or self.client).post("/bookings", json={"seat_id": seat_id}, headers=self._h(user))
+    def confirm(self, seat_id, user="u1", client=None, key=AUTO):
+        """POST /bookings. key 기본값은 호출마다 새 멱등 키, None 이면 Idempotency-Key 헤더 없음."""
+        headers = self._h(user)
+        if key is AUTO:
+            key = f"auto-key-{next(self._keys)}"
+        if key is not None:
+            headers["Idempotency-Key"] = key
+        return (client or self.client).post("/bookings", json={"seat_id": seat_id}, headers=headers)
+
+    def callback(self, booking_id, result="SUCCEEDED", client=None, **extra):
+        """POST /payments/callback (모의 결제사). X-User-Id 없이 보낸다. extra 는 본문에 그대로 얹는다."""
+        body = {"booking_id": booking_id, "result": result, **extra}
+        return (client or self.client).post("/payments/callback", json=body)
+
+    def get_booking(self, booking_id, user="u1", client=None):
+        return (client or self.client).get(f"/bookings/{booking_id}", headers=self._h(user))
+
+    def buy(self, seat_id, user="u1"):
+        """홀드 → 확정 요청 → 성공 콜백으로 좌석을 SOLD 로 만든다. CONFIRMED 예매 본문을 돌려준다."""
+        assert self.hold(seat_id, user).status_code == 201
+        r = self.confirm(seat_id, user)
+        assert r.status_code == 201, r.text
+        r = self.callback(r.json()["id"], "SUCCEEDED")
+        assert r.status_code == 200, r.text
+        assert r.json()["status"] == "CONFIRMED", r.text
+        return r.json()
+
+    def pending(self, seat_id, user="u1", key=AUTO):
+        """홀드 → 확정 요청까지 하고 PENDING 예매 본문을 돌려준다."""
+        assert self.hold(seat_id, user).status_code == 201
+        r = self.confirm(seat_id, user, key=key)
+        assert r.status_code == 201, r.text
+        assert r.json()["status"] == "PENDING", r.text
+        return r.json()
+
+    def booking_statuses(self, seat_id):
+        """DB 의 bookings 에서 이 좌석 예매들의 status 목록 (정렬)."""
+        import psycopg
+
+        with psycopg.connect(_dsn()) as conn:
+            rows = conn.execute("SELECT status FROM bookings WHERE seat_id = %s", (seat_id,)).fetchall()
+        return sorted(r[0] for r in rows)
 
     # --- 공연·좌석 찾기 (ID 하드코딩 금지) ---
     def discover(self):
@@ -108,7 +151,9 @@ def request_blocked_by_row_lock(api, seat_id, send, clock_at_send, clock_after_w
     import psycopg
 
     result = {}
-    conn = psycopg.connect(_dsn())
+    conn = psycopg.connect(_dsn())  # 좌석 행을 잠그는 연결 (트랜잭션 유지)
+    # 대기 확인은 별도 autocommit 연결로: 트랜잭션 안에서는 pg_stat_activity 스냅샷이 캐시돼 뒤늦게 생긴 대기자가 안 보인다
+    monitor = psycopg.connect(_dsn(), autocommit=True)
     thread = None
     try:
         conn.execute("SELECT id FROM seats WHERE id = %s FOR UPDATE", (seat_id,))
@@ -126,7 +171,7 @@ def request_blocked_by_row_lock(api, seat_id, send, clock_at_send, clock_after_w
         deadline = time.monotonic() + timeout
         waiting = 0
         while time.monotonic() < deadline and "resp" not in result and "exc" not in result:
-            waiting = conn.execute(
+            waiting = monitor.execute(
                 "SELECT count(*) FROM pg_stat_activity "
                 "WHERE datname = current_database() AND pid <> pg_backend_pid() AND wait_event_type = 'Lock'"
             ).fetchone()[0]
@@ -138,6 +183,7 @@ def request_blocked_by_row_lock(api, seat_id, send, clock_at_send, clock_after_w
     finally:
         conn.rollback()
         conn.close()
+        monitor.close()
         if thread is not None:
             thread.join(timeout=timeout)
     assert not thread.is_alive(), "잠금 해제 후에도 요청이 끝나지 않았습니다"

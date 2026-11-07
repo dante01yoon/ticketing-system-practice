@@ -74,7 +74,7 @@ BAD_BODIES = [
 def test_us04_confirm_malformed_body_is_422_validation_error(api, kwargs):
     sid = api.sid("A1")
     api.hold(sid, "u1")
-    headers = {"X-User-Id": "u1", **kwargs.get("headers", {})}
+    headers = {"X-User-Id": "u1", "Idempotency-Key": "k-bad-body", **kwargs.get("headers", {})}
     send = {k: v for k, v in kwargs.items() if k != "headers"}
     r = api.client.post("/bookings", headers=headers, **send)
     assert_error(r, 422, "VALIDATION_ERROR")
@@ -99,3 +99,26 @@ def test_us02_ac1_large_concert_seatmap_orders_rows_a_to_z_then_aa(api):
     expected = [f"{row}{n}" for row in rows for n in range(1, 11)][:261]
     assert numbers == expected, "열 순서 A..Z, AA.. / 열 안에서는 1..10 숫자 순이어야 함"
     assert numbers.index("AA1") == numbers.index("Z10") + 1
+
+
+_NOT_JSON = {"content": "이건 JSON이 아님", "headers": {"Content-Type": "application/json"}}
+
+
+@pytest.mark.story("US-04", "VALIDATION")
+def test_us04_validation_order_user_before_body(api):
+    """판단 순서: 401 사용자가 422 본문보다 먼저."""
+    assert_error(api.client.post("/bookings", **_NOT_JSON), 401, "USER_ID_REQUIRED")
+
+
+@pytest.mark.story("US-04", "VALIDATION")
+def test_us04_validation_order_user_before_idempotency_key(api):
+    r = api.client.post("/bookings", json={"seat_id": api.sid("A1")})  # 사용자도 키도 없음
+    assert_error(r, 401, "USER_ID_REQUIRED")
+
+
+@pytest.mark.story("US-04", "VALIDATION")
+def test_us04_validation_order_idempotency_key_before_body(api):
+    """판단 순서: 400 멱등 키가 422 본문보다 먼저."""
+    headers = {**_NOT_JSON["headers"], "X-User-Id": "u1"}
+    r = api.client.post("/bookings", content=_NOT_JSON["content"], headers=headers)
+    assert_error(r, 400, "IDEMPOTENCY_KEY_REQUIRED")

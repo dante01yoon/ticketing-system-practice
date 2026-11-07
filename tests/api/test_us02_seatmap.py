@@ -6,8 +6,7 @@ from apihelpers import SEAT_NUMBERS, assert_error
 
 def make_sold(api, number, user):
     sid = api.sid(number)
-    assert api.hold(sid, user).status_code == 201
-    assert api.confirm(sid, user).status_code == 201
+    api.buy(sid, user)
 
 
 @pytest.mark.story("US-02", "AC-1")
@@ -57,3 +56,9 @@ def test_us02_ac4_seatmap_does_not_expose_holder(api):
     assert holder not in r.text, "좌석맵에 홀드한 사용자 ID 가 노출됨"
     for s in r.json()["seats"]:
         assert set(s) <= {"id", "number", "status"}, f"예상 밖 좌석 필드: {set(s)}"
+
+
+@pytest.mark.story("US-02", "AC-1")
+def test_us02_ac1_pending_booking_seat_still_shows_held(api):
+    api.pending(api.sid("A2"), "u1")  # 결제 대기: 아직 팔리지 않음
+    assert api.status("A2") == "HELD"

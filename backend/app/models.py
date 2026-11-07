@@ -1,6 +1,7 @@
 from datetime import datetime
 
-from sqlalchemy import DateTime, ForeignKey, String, UniqueConstraint
+from sqlalchemy import DateTime, ForeignKey, Integer, String, UniqueConstraint
+from sqlalchemy.dialects.postgresql import JSONB
 from sqlalchemy.orm import DeclarativeBase, Mapped, mapped_column
 
 
@@ -31,7 +32,20 @@ class Seat(Base):
 class Booking(Base):
     __tablename__ = "bookings"
     id: Mapped[str] = mapped_column(String, primary_key=True)
-    seat_id: Mapped[str] = mapped_column(ForeignKey("seats.id"), nullable=False, unique=True)
+    seat_id: Mapped[str] = mapped_column(ForeignKey("seats.id"), nullable=False, index=True)
     concert_id: Mapped[str] = mapped_column(ForeignKey("concerts.id"), nullable=False)
     user_id: Mapped[str] = mapped_column(String, nullable=False)
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
+    status: Mapped[str] = mapped_column(String, nullable=False, default="PENDING")
+    expires_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
+
+
+class IdempotencyKey(Base):
+    """사용자별 멱등 키. 처음 성공 응답(상태 코드·본문)을 저장해 그대로 돌려준다."""
+
+    __tablename__ = "idempotency_keys"
+    user_id: Mapped[str] = mapped_column(String, primary_key=True)
+    key: Mapped[str] = mapped_column(String(255), primary_key=True)
+    seat_id: Mapped[str] = mapped_column(String, nullable=False)
+    response_status: Mapped[int] = mapped_column(Integer, nullable=False)
+    response_body: Mapped[dict] = mapped_column(JSONB, nullable=False)

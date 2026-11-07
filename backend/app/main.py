@@ -1,7 +1,7 @@
 import re
 import uuid
 from datetime import datetime, timedelta
-from typing import Callable
+from typing import Callable, Literal
 
 from fastapi import Depends, FastAPI, Request
 from fastapi.exceptions import RequestValidationError
@@ -12,15 +12,127 @@ from sqlalchemy.exc import IntegrityError
 from starlette.exceptions import HTTPException as StarletteHTTPException
 
 from .db import SessionLocal
-from .deps import get_now, require_user_id
+from .deps import get_now, require_idempotency_key, require_user_id
 from .errors import ApiError
-from .models import Booking, Concert, Seat
+from .models import Booking, Concert, IdempotencyKey, Seat
 
 HOLD_TTL = timedelta(minutes=5)
 
 
 class BookingRequest(BaseModel):
     seat_id: str
+
+
+async def booking_request(
+    request: Request, _user: str = Depends(require_user_id), _key: str = Depends(require_idempotency_key)
+) -> BookingRequest:
+    """판단 순서(401 사용자 → 400 멱등 키 → 422 본문)를 지키려고 본문은 두 헤더 검사 뒤에 직접 읽는다."""
+    try:
+        return BookingRequest.model_validate(await request.json())
+    except Exception:
+        raise ApiError(422, "VALIDATION_ERROR", "요청 형식이 올바르지 않습니다.")
+
+
+class CallbackRequest(BaseModel):
+    booking_id: str
+    result: Literal["SUCCEEDED", "FAILED"]
+
+
+def _hold_body(seat: Seat, held_at: datetime) -> dict:
+    return {
+        "seat_id": seat.id,
+        "status": "HELD",
+        "held_at": _iso(held_at),
+        "expires_at": _iso(held_at + HOLD_TTL),
+    }
+
+
+def _booking_body(b: Booking) -> dict:
+    return {
+        "id": b.id,
+        "seat_id": b.seat_id,
+        "concert_id": b.concert_id,
+        "user_id": b.user_id,
+        "status": b.status,
+        "created_at": _iso(b.created_at),
+        "expires_at": _iso(b.expires_at),
+    }
+
+
+def _confirm_once(seat_id: str, user_id: str, key: str, clock: Callable[[], datetime]) -> JSONResponse:
+    with SessionLocal() as db, db.begin():
+        # 1. 멱등 키 — 잠금 전(잠금 없이 재생) 한 번, 잠금 뒤 한 번 더 본다.
+        # 같은 키로 잠금을 기다리던 요청은, 앞선 요청이 커밋한 처음 응답을 만료·홀드 판단보다 먼저 재생해야 한다.
+        def replay() -> JSONResponse | None:
+            saved = db.execute(
+                select(IdempotencyKey)
+                .where(IdempotencyKey.user_id == user_id, IdempotencyKey.key == key)
+                .execution_options(populate_existing=True)
+            ).scalar_one_or_none()
+            if saved is None:
+                return None
+            if saved.seat_id != seat_id:
+                raise ApiError(422, "IDEMPOTENCY_KEY_REUSED", "다른 요청에 이미 쓴 멱등 키입니다.")
+            return JSONResponse(saved.response_body, status_code=saved.response_status)
+
+        if (hit := replay()) is not None:
+            return hit
+
+        seat = _lock_seat(db, seat_id)
+        if (hit := replay()) is not None:  # 시계를 읽기 전에 (잠금 뒤 첫 시계 읽기 규칙 유지)
+            return hit
+        now = clock()  # 잠금 뒤에 읽는다
+
+        def done(status: int, booking: Booking) -> JSONResponse:
+            payload = _booking_body(booking)
+            db.add(IdempotencyKey(user_id=user_id, key=key, seat_id=seat_id, response_status=status, response_body=payload))
+            db.flush()
+            return JSONResponse(payload, status_code=status)
+
+        # 2. 이미 팔린 좌석
+        confirmed = db.execute(
+            select(Booking).where(Booking.seat_id == seat.id, Booking.status == "CONFIRMED")
+        ).scalar_one_or_none()
+        if confirmed is not None:
+            if confirmed.user_id == user_id:
+                return done(200, confirmed)
+            raise ApiError(409, "SEAT_ALREADY_SOLD", "이미 판매된 좌석입니다.")
+        if seat.status == "SOLD":
+            raise ApiError(409, "SEAT_ALREADY_SOLD", "이미 판매된 좌석입니다.")
+        # 3. 홀드 확인
+        if seat.status == "AVAILABLE":
+            raise ApiError(409, "HOLD_REQUIRED", "먼저 좌석을 홀드하세요.")
+        if not _is_live_hold(seat, now):
+            if seat.held_by == user_id:
+                raise ApiError(409, "HOLD_EXPIRED", "홀드가 만료되었습니다.")
+            raise ApiError(409, "HOLD_REQUIRED", "먼저 좌석을 홀드하세요.")
+        if seat.held_by != user_id:
+            raise ApiError(403, "HOLD_NOT_OWNED", "내 홀드가 아닙니다.")
+        # 4. 이 홀드에 묶인 내 PENDING 예매
+        hold_expires = seat.held_at + HOLD_TTL
+        pending = db.execute(
+            select(Booking).where(
+                Booking.seat_id == seat.id,
+                Booking.user_id == user_id,
+                Booking.status == "PENDING",
+                Booking.expires_at == hold_expires,
+            )
+        ).scalars().first()
+        if pending is not None:
+            return done(200, pending)
+        # 5. 새 PENDING 예매 (좌석은 팔지 않는다)
+        booking = Booking(
+            id=str(uuid.uuid4()),
+            seat_id=seat.id,
+            concert_id=seat.concert_id,
+            user_id=user_id,
+            status="PENDING",
+            created_at=now,
+            expires_at=hold_expires,
+        )
+        db.add(booking)
+        db.flush()
+        return done(201, booking)
 
 
 def _iso(dt: datetime) -> str:
@@ -52,7 +164,7 @@ def lock_clock(request: Request) -> Callable[[], datetime]:
 
 
 def create_app() -> FastAPI:
-    app = FastAPI(title="Ticketing API (MVP)", version="0.1.0")
+    app = FastAPI(title="Ticketing API (MVP)", version="0.2.0")
 
     @app.exception_handler(ApiError)
     async def _api_error(_: Request, exc: ApiError):
@@ -98,50 +210,59 @@ def create_app() -> FastAPI:
             if seat.status == "SOLD":
                 raise ApiError(409, "SEAT_ALREADY_SOLD", "이미 판매된 좌석입니다.")
             if _is_live_hold(seat, now):
+                if seat.held_by == user_id:  # 자기 유효 홀드: 기존 홀드 그대로 (만료 연장 없음)
+                    return JSONResponse(_hold_body(seat, seat.held_at), status_code=200)
                 raise ApiError(409, "SEAT_ALREADY_HELD", "이미 홀드된 좌석입니다.")
             seat.status, seat.held_by, seat.held_at = "HELD", user_id, now
-            return {
-                "seat_id": seat.id,
-                "status": "HELD",
-                "held_at": _iso(now),
-                "expires_at": _iso(now + HOLD_TTL),
-            }
+            return _hold_body(seat, now)
 
-    @app.post("/bookings", status_code=201)
+    @app.post("/bookings")
     def confirm_booking(
-        body: BookingRequest,
+        body: BookingRequest = Depends(booking_request),
         user_id: str = Depends(require_user_id),
+        key: str = Depends(require_idempotency_key),
         clock: Callable[[], datetime] = Depends(lock_clock),
     ):
-        try:
-            with SessionLocal() as db, db.begin():
-                seat = _lock_seat(db, body.seat_id)
-                now = clock()  # 잠금 뒤에 읽는다
-                if seat.status == "SOLD":
-                    raise ApiError(409, "SEAT_ALREADY_SOLD", "이미 판매된 좌석입니다.")
-                if seat.status == "AVAILABLE":
-                    raise ApiError(409, "HOLD_REQUIRED", "먼저 좌석을 홀드하세요.")
-                if not _is_live_hold(seat, now):
-                    if seat.held_by == user_id:
-                        raise ApiError(409, "HOLD_EXPIRED", "홀드가 만료되었습니다.")
-                    raise ApiError(409, "HOLD_REQUIRED", "먼저 좌석을 홀드하세요.")
-                if seat.held_by != user_id:
-                    raise ApiError(403, "HOLD_NOT_OWNED", "내 홀드가 아닙니다.")
-                seat.status = "SOLD"
-                booking = Booking(
-                    id=str(uuid.uuid4()), seat_id=seat.id, concert_id=seat.concert_id, user_id=user_id, created_at=now
-                )
-                db.add(booking)
-                db.flush()  # seat_id UNIQUE 가 두 번째 방어선
-                return {
-                    "id": booking.id,
-                    "seat_id": booking.seat_id,
-                    "concert_id": booking.concert_id,
-                    "user_id": booking.user_id,
-                    "created_at": _iso(now),
-                }
-        except IntegrityError:
-            raise ApiError(409, "SEAT_ALREADY_SOLD", "이미 판매된 좌석입니다.")
+        # 같은 사용자·같은 키가 동시에(특히 다른 좌석으로) 오면 idempotency_keys PK 충돌이 난다.
+        # 진 쪽은 롤백하고 다시 판단하면 이긴 쪽의 기록을 보고 재생(또는 REUSED)한다.
+        for _ in range(3):
+            try:
+                return _confirm_once(body.seat_id, user_id, key, clock)
+            except IntegrityError as e:
+                if "idempotency_keys" not in str(e.orig):
+                    raise
+        raise ApiError(409, "SEAT_ALREADY_SOLD", "요청을 처리하지 못했습니다. 다시 시도하세요.")
+
+    @app.get("/bookings/{booking_id}")
+    def get_booking(booking_id: str, user_id: str = Depends(require_user_id)):
+        with SessionLocal() as db:
+            booking = db.get(Booking, booking_id)
+            if booking is None or booking.user_id != user_id:
+                raise ApiError(404, "BOOKING_NOT_FOUND", "예매를 찾을 수 없습니다.")
+            return _booking_body(booking)
+
+    @app.post("/payments/callback")
+    def payment_callback(body: CallbackRequest, clock: Callable[[], datetime] = Depends(lock_clock)):
+        with SessionLocal() as db, db.begin():
+            probe = db.get(Booking, body.booking_id)
+            if probe is None:
+                raise ApiError(404, "BOOKING_NOT_FOUND", "예매를 찾을 수 없습니다.")
+            seat = _lock_seat(db, probe.seat_id)  # 확정 요청·재홀드와 같은 좌석 잠금으로 직렬화
+            now = clock()  # 잠금 뒤에 읽는다
+            # 상태는 좌석 잠금 아래에서만 바뀌므로, 잠금 뒤 새로 읽은 값이 최신이다.
+            booking = db.execute(
+                select(Booking).where(Booking.id == body.booking_id).execution_options(populate_existing=True)
+            ).scalar_one()
+            if booking.status == "PENDING":
+                if body.result == "FAILED":
+                    booking.status = "FAILED"  # 홀드 유지
+                elif now < booking.expires_at:
+                    booking.status = "CONFIRMED"
+                    seat.status = "SOLD"
+                else:
+                    booking.status = "REFUND_REQUIRED"  # 좌석은 건드리지 않는다
+                db.flush()
+            return _booking_body(booking)
 
     return app
 

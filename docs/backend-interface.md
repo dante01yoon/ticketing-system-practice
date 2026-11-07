@@ -1,7 +1,7 @@
-# 백엔드 구현·테스트 접점 (3장 첫 서버)
+# 백엔드 구현·테스트 접점 (3장 첫 서버, 6장 결제 두 단계)
 
 test(`tests/api/`)와 server(`backend/`)가 서로 기대하는 이름과 동작. 바꾸려면 lead에게 먼저 알린다.
-API 동작 자체는 `docs/openapi.yaml`(계약)과 `docs/stories/US-01~04`(인수 조건)가 기준이다.
+API 동작 자체는 `docs/openapi.yaml`(계약)과 `docs/stories/US-01~05`(인수 조건)가 기준이다.
 
 ## 실행
 ```bash
@@ -21,7 +21,7 @@ uv run pytest                                        # 전체 테스트
 |---|---|
 | `backend.app.main.create_app() -> FastAPI` | 새 앱 인스턴스 |
 | `backend.app.main.app` | `create_app()` 결과 (uvicorn용) |
-| `backend.app.deps.get_now() -> datetime` | 현재 시각(UTC, timezone-aware) FastAPI 의존성. 홀드·만료·좌석맵 판단은 **모두 이 값만** 쓴다(DB `now()` 금지). 테스트는 `app.dependency_overrides[get_now]`로 바꾼다 |
+| `backend.app.deps.get_now() -> datetime` | 현재 시각(UTC, timezone-aware) FastAPI 의존성. 홀드·만료·좌석맵·확정 요청·콜백 판단과 기록 시각은 **모두 이 값만** 쓴다(DB `now()`, 요청 본문의 시각 금지). 테스트는 `app.dependency_overrides[get_now]`로 바꾼다 |
 | `backend.app.seed.reset_db(seed: bool = True) -> None` | 마이그레이션을 head까지 적용하고 모든 데이터를 지운 뒤, `seed=True`면 시드를 넣는다. 테스트마다 호출 |
 | `backend.app.seed.add_concert(title: str, starts_at: datetime, seats: int = 0) -> str` | 공연 하나를 더 만들고(좌석 `seats`개, 번호 A1부터) 공연 ID를 돌려준다. 테스트 준비용 |
 
@@ -41,6 +41,17 @@ uv run pytest                                        # 전체 테스트
 - 요청 본문 형식 오류(`POST /bookings`에 JSON 아님, `seat_id` 누락·null·문자열 아님)는 422 `{code: VALIDATION_ERROR}`.
 - 같은 좌석 동시 홀드·동시 확정은 하나만 성공(DB 행 잠금 또는 조건부 UPDATE 등, 방법은 server가 정함).
 
+## 6장: 결제 두 단계 (US-04 개정, US-05 신규)
+- 경로: `POST /bookings`(헤더 `Idempotency-Key` 필수) → PENDING 예매, `POST /payments/callback` `{booking_id, result: SUCCEEDED|FAILED}`,
+  `GET /bookings/{id}`(X-User-Id, 본인만). 상태 코드·`code`·판단 순서는 `docs/openapi.yaml`.
+- `POST /bookings`는 **좌석을 팔지 않는다.** 성공 콜백이 판다. 기존 "확정 = SOLD" 테스트는 콜백을 거치도록 바뀐다.
+- 만료 경계는 홀드·확정 요청·콜백 모두 같다: `now >= held_at + 5분`이면 만료. 콜백은 `now >= booking.expires_at`이면 REFUND_REQUIRED.
+- **콜백도 좌석 행 잠금을 얻은 뒤에 시각을 읽는다**(`lock_clock` 패턴). 늦은 성공 콜백과 다른 사용자의 재홀드가 같은 좌석에서 직렬화돼야 한다.
+- 콜백 반영은 예매가 PENDING일 때 한 번뿐(중복·동시 콜백, 반대 결과 콜백은 무변경 200).
+- 멱등 키는 `(user_id, key)` 단위. 같은 키·같은 seat_id 재요청은 처음 응답(상태 코드·본문)을 그대로. 동시에 같은 키가 와도 예매 하나.
+- 한 좌석의 CONFIRMED 예매는 최대 하나(DB 제약으로도 막는다). 기존 `bookings.seat_id` UNIQUE는 실패·환불 필요 예매가 생기므로 바뀐다 — 스키마는 server가 새 마이그레이션으로 정한다.
+- 테스트 헬퍼가 DB를 직접 볼 때 쓰는 이름: 테이블 `bookings`, 열 `seat_id`, `status`(`PENDING|CONFIRMED|FAILED|REFUND_REQUIRED`). 그 밖의 열 이름은 테스트가 가정하지 않는다.
+
 ## 테스트하지 않는 것 (PRD 열린 질문, 미정)
 - 한 사용자가 여러 좌석을 홀드하는 경우
-- 자기 유효 홀드를 다시 홀드하는 경우
+- 결제사 콜백 서명 검증, 환불 실행
