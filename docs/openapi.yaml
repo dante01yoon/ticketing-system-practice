@@ -23,6 +23,7 @@ info:
       홀드 DB 트랜잭션(좌석 행 잠금)까지 갔는지를 `X-Hold-Gate: REDIS|DB`로 알린다. 판단 기준은 언제나 PostgreSQL이며 Redis가 꺼져도 결과 규칙은 같다.
     - 대기열(9장, docs/queue.md): 공연별 Redis 대기열에서 번호표를 받고, 전광판(serving)이 내 번호에 닿으면 2분짜리 입장권을 받는다.
       좌석맵·홀드는 `X-User-Id`와 그 사용자의 유효한 입장권(`X-Entry-Token`)이 있어야 한다(없음·위조·남의 것·다른 공연·만료 → 403).
+    - 쿠버네티스(11장, docs/k8s.md): `GET /health`는 프로브용이며 DB·Redis를 보지 않는다. `X-App-Id`는 Pod 이름이다.
     - 아직 정하지 않은 동작(PRD 열린 질문 1): 한 사용자의 여러 좌석 홀드.
 
 servers:
@@ -34,8 +35,30 @@ tags:
   - name: bookings
   - name: payments
   - name: queue
+  - name: ops
 
 paths:
+  /health:
+    get:
+      tags: [ops]
+      operationId: health
+      summary: 프로세스 생존 확인 (11장 readiness·liveness 프로브)
+      description: |
+        헤더 없이 호출한다. 프로세스가 요청을 받을 수 있으면 200. DB·Redis 상태는 보지 않는다
+        (liveness가 같은 경로라 DB가 잠깐 끊겨도 앱 Pod를 재시작하지 않게 하려는 것).
+      responses:
+        "200":
+          description: 살아 있음
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [status]
+                properties:
+                  status:
+                    type: string
+                    const: ok
+
   /concerts:
     get:
       tags: [concerts]

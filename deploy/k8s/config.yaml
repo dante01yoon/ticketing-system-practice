@@ -1,0 +1,22 @@
+# 개발용 값이다(실제 비밀 아님).
+apiVersion: v1
+kind: Secret
+metadata:
+  name: ticketing-secrets
+type: Opaque
+stringData:
+  POSTGRES_PASSWORD: ticketing
+  ENTRY_TOKEN_SECRET: dev-entry-token-secret
+---
+# 연결 예산(docs/k8s.md ③): (maxReplicas 3 + maxSurge 1) × 워커 1 × (8 + 4) = 48 ≤ 0.6 × max_connections(100)
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: app-config
+data:
+  REDIS_URL: redis://redis:6379/0
+  DB_POOL_SIZE: "8"
+  DB_MAX_OVERFLOW: "4"
+  # 대기열을 사실상 끈 값(11장 부하는 HPA 관찰용)
+  QUEUE_BATCH: "1000000"
+  ENTRY_TTL_SECONDS: "3600"

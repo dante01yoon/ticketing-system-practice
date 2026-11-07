@@ -1,13 +1,17 @@
+import sys
+import time
 import uuid
 from datetime import datetime, timezone
 from pathlib import Path
 
 from alembic import command
 from alembic.config import Config
-from sqlalchemy import text
+from alembic.runtime.migration import MigrationContext
+from alembic.script import ScriptDirectory
+from sqlalchemy import select, text
 
 from . import cache
-from .db import SessionLocal, database_url
+from .db import SessionLocal, database_url, engine
 from .models import Concert, Seat
 
 ALEMBIC_INI = Path(__file__).resolve().parent.parent / "alembic.ini"
@@ -71,6 +75,47 @@ def reset_db(seed: bool = True) -> None:
         insert_seed()
 
 
+def _schema_is_head() -> bool:
+    cfg = Config(str(ALEMBIC_INI))
+    cfg.set_main_option("script_location", str(ALEMBIC_INI.parent / "migrations"))
+    heads = set(ScriptDirectory.from_config(cfg).get_heads())
+    with engine.connect() as conn:
+        current = set(MigrationContext.configure(conn).get_current_heads())
+    return current == heads
+
+
+def wait_for_schema(timeout: float = 300.0, interval: float = 2.0) -> bool:
+    """마이그레이션하지 않고, DB에 접속되고 alembic 리비전이 head가 될 때까지 기다린다. 시간 초과면 False."""
+    deadline = time.monotonic() + timeout
+    while True:
+        try:
+            if _schema_is_head():
+                return True
+        except Exception:  # 접속 실패·테이블 없음 등은 재시도
+            pass
+        if time.monotonic() >= deadline:
+            return False
+        time.sleep(min(interval, max(0.0, deadline - time.monotonic())))
+
+
+def seed_if_empty() -> bool:
+    """마이그레이션을 head까지 적용하고, 공연이 하나도 없을 때만 시드를 넣는다. 아무것도 지우지 않는다."""
+    migrate_head()
+    with SessionLocal() as db:
+        has_concert = db.execute(select(Concert.id).limit(1)).first() is not None
+    if has_concert:
+        return False
+    insert_seed()
+    return True
+
+
 if __name__ == "__main__":
-    reset_db(seed=True)
-    print("seeded: 1 concert, 100 seats")
+    if "--wait-schema" in sys.argv[1:]:
+        ok = wait_for_schema()
+        print("schema ready" if ok else "timeout waiting for schema")
+        sys.exit(0 if ok else 1)
+    elif "--if-empty" in sys.argv[1:]:
+        print("seeded: 1 concert, 100 seats" if seed_if_empty() else "skip: concerts already exist")
+    else:
+        reset_db(seed=True)
+        print("seeded: 1 concert, 100 seats")

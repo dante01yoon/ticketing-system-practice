@@ -78,3 +78,12 @@ uv run pytest                                        # 전체 테스트
 - 확정 콜백과 같은 트랜잭션에서 `outbox` 한 줄. 테스트가 보는 열: `outbox(event_id, booking_id, sent_at)`, `notifications(user_id, event_id, booking_id, created_at)`.
 - 테스트 접점: `backend.app.events.relay_once(limit=100) -> int`, `backend.app.notifier.Notifier()`의 `poll_once(timeout=5.0) -> int`·`close()`.
 - `reset_db()`는 `outbox`·`notifications`도 비우지만 Kafka 토픽·오프셋은 그대로다. 테스트는 자기 사용자·예매로만 센다.
+
+## 11장: 쿠버네티스 (docs/k8s.md)
+- `GET /health` → 200 `{"status": "ok"}`. 헤더 불필요, DB·Redis를 보지 않는다(프로브용).
+- `python -m backend.app.seed --if-empty`: 마이그레이션 head 뒤 공연이 없을 때만 시드. 아무것도 지우지 않는다(k8s `Job/db-init`).
+  함수 `backend.app.seed.seed_if_empty() -> bool`(시드했으면 True).
+- `python -m backend.app.seed --wait-schema` / `backend.app.seed.wait_for_schema(timeout: float = 300.0, interval: float = 2.0) -> bool`:
+  마이그레이션 없이 DB 접속·alembic head 일치를 기다린다(k8s app initContainer `wait-for-db`). 성공 0, 시간 초과 1.
+  인자 없는 `python -m backend.app.seed`는 지금처럼 `reset_db(seed=True)`.
+- 매니페스트는 `deploy/k8s`(server 소유). 스모크 테스트는 `kubectl port-forward svc/app`으로 붙고 DB를 지우지 않는다.

@@ -233,6 +233,11 @@ def create_app() -> FastAPI:
         code = "NOT_FOUND" if exc.status_code == 404 else "HTTP_ERROR"
         return JSONResponse({"code": code, "message": str(exc.detail)}, status_code=exc.status_code)
 
+    @app.get("/health")
+    def health():
+        # 프로브용: DB·Redis를 보지 않는다(프로세스가 요청을 받는지만 확인).
+        return {"status": "ok"}
+
     @app.get("/concerts")
     def list_concerts():
         with SessionLocal() as db:
