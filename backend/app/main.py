@@ -320,15 +320,18 @@ def create_app() -> FastAPI:
         entry_token: str | None = Header(default=None, alias="X-Entry-Token"),
         clock: Callable[[], datetime] = Depends(lock_clock),
     ):
-        # 입장권(401 다음, Redis 관문 전): 없음·위조·남의 것·만료는 여기서 403
-        entry_concert = queue.check_token(request.app.state.queue_cfg, entry_token, user_id, clock())
-        # 다른 공연의 입장권은 좌석 상태·Redis 표시와 무관하게 관문 전에 403 (좌석→공연은 불변이라 가벼운 조회로 확인).
-        # 알 수 없는 좌석은 건너뛰고 기존대로 관문→DB에서 404.
+        # 입장권(401 다음, Redis 관문 전). 없음·형식 오류·위조·남의 것은 DB 조회 없이 여기서 403.
+        # 서명·소유자가 맞는 입장권만 좌석→공연을 조회한다(FOR UPDATE 없음, 관문 전에 세션을 닫는다).
+        # 다른 공연의 입장권은 만료 여부와 무관하게 INVALID, 같은 공연의 만료는 EXPIRED.
+        # 알 수 없는 좌석(과 NUL 좌석 ID)은 공연 비교 없이 두고 기존대로 관문→DB에서 404.
+        cfg = request.app.state.queue_cfg
+        entry_concert, exp_us = queue.verify_token(cfg, entry_token, user_id)
         if "\x00" not in seat_id:
             with SessionLocal() as db:
                 seat_concert = db.execute(select(Seat.concert_id).where(Seat.id == seat_id)).scalar_one_or_none()
             if seat_concert is not None and seat_concert != entry_concert:
                 raise ApiError(403, "ENTRY_TOKEN_INVALID", "입장권이 올바르지 않습니다.")
+        queue.ensure_not_expired(exp_us, clock())
         # Redis 관문: DB 트랜잭션 전에 원자적으로 확인+표시. 이미 잡힌 좌석은 DB에 가지 않고 거절한다.
         gate = cache.hold_gate(seat_id, user_id, clock())
         if gate.reject_code is not None:

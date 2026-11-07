@@ -146,8 +146,8 @@ def make_token(cfg: QueueConfig, user_id: str, concert_id: str, exp_us: int) -> 
     return f"{payload}.{_sign(cfg, payload)}"
 
 
-def check_token(cfg: QueueConfig, token: str | None, user_id: str, now: datetime, concert_id: str | None = None) -> str:
-    """입장권을 검사해 입장권의 공연 ID를 돌려준다. 거절이면 403 ApiError."""
+def verify_token(cfg: QueueConfig, token: str | None, user_id: str) -> tuple[str, int]:
+    """서명·소유자를 검사해 (입장권의 공연 ID, 만료 us)를 돌려준다. 만료는 보지 않는다. 거절이면 403 ApiError."""
     if token is None or not token.strip():
         raise ApiError(403, "ENTRY_TOKEN_REQUIRED", "입장권(X-Entry-Token)이 필요합니다.")
     invalid = ApiError(403, "ENTRY_TOKEN_INVALID", "입장권이 올바르지 않습니다.")
@@ -163,10 +163,22 @@ def check_token(cfg: QueueConfig, token: str | None, user_id: str, now: datetime
         raise
     except Exception:
         raise invalid
-    if user != user_id or (concert_id is not None and concert != concert_id):
+    if user != user_id:
         raise invalid
-    if _us(now) >= exp:
+    return concert, exp
+
+
+def ensure_not_expired(exp_us: int, now: datetime) -> None:
+    if _us(now) >= exp_us:
         raise ApiError(403, "ENTRY_TOKEN_EXPIRED", "입장권이 만료되었습니다. 대기열에 다시 서세요.")
+
+
+def check_token(cfg: QueueConfig, token: str | None, user_id: str, now: datetime, concert_id: str | None = None) -> str:
+    """입장권을 검사해 입장권의 공연 ID를 돌려준다. 거절이면 403 ApiError. 공연 불일치는 만료보다 먼저 INVALID."""
+    concert, exp = verify_token(cfg, token, user_id)
+    if concert_id is not None and concert != concert_id:
+        raise ApiError(403, "ENTRY_TOKEN_INVALID", "입장권이 올바르지 않습니다.")
+    ensure_not_expired(exp, now)
     return concert
 
 

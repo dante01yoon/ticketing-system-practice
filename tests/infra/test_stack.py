@@ -8,7 +8,7 @@ import httpx
 import psycopg
 import pytest
 
-from conftest import APPS, BASE, ROOT, entry_headers, fresh_user, get_concerts, stopped_app
+from conftest import APPS, BASE, ROOT, compose, entry_headers, fresh_user, get_concerts, stopped_app, wait_ready
 
 NGINX_CONF = ROOT / "deploy" / "nginx" / "nginx.conf"
 
@@ -147,8 +147,6 @@ def test_nginx_conf_does_not_retry_non_idempotent_requests():
 # ---------- 5. 앱이 멈춘 상태에서 nginx 시작·재시작 ----------
 @pytest.mark.story("US-07", "nginx 재시작")
 def test_nginx_restarts_while_one_app_is_stopped_then_app_rejoins(seeded, client):
-    from conftest import compose, wait_ready
-
     with stopped_app("app2"):
         # 설정 검사: 멈춘 앱의 이름을 못 찾아도 통과해야 한다 (host not found in upstream 이면 실패)
         t = compose("exec", "-T", "nginx", "nginx", "-t", check=False)

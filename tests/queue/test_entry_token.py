@@ -182,3 +182,29 @@ def test_unknown_seat_with_valid_token_still_goes_gate_then_db_404(q):
     r = q.hold("no-such-seat", "u1", token)
     assert_error(r, 404, "SEAT_NOT_FOUND")
     assert r.headers.get("X-Hold-Gate") == "DB"
+
+
+# ---------- 만료와 다른 공연이 겹치면 다른 공연이 이긴다 (INVALID) ----------
+@pytest.mark.story("US-08", "다른 공연")
+def test_expired_token_of_another_concert_is_403_invalid_not_expired(q):
+    b = _other_concert(q)
+    a_token = q.admit("u1")["entry_token"]
+    b_seat = q.seat_id("A1", b)
+    q.clock.now = T0 + timedelta(seconds=120)  # get_now >= 만료 시각
+    # 대조: 좌석맵은 공연 비교가 먼저라 INVALID
+    assert_error(q.seatmap("u1", a_token, b), 403, "ENTRY_TOKEN_INVALID")
+    r = q.hold(b_seat, "u1", a_token)
+    assert_error(r, 403, "ENTRY_TOKEN_INVALID")
+    assert r.headers.get("X-Hold-Gate") is None
+    assert q.seat_raw_status(b_seat) == "AVAILABLE"
+
+
+@pytest.mark.story("US-08", "만료")
+def test_expired_token_of_same_concert_stays_expired_on_hold(q):
+    a_token = q.admit("u1")["entry_token"]
+    a1 = q.seat_id("A1")
+    q.clock.now = T0 + timedelta(seconds=120)
+    r = q.hold(a1, "u1", a_token)
+    assert_error(r, 403, "ENTRY_TOKEN_EXPIRED")
+    assert r.headers.get("X-Hold-Gate") is None
+    assert q.seat_raw_status(a1) == "AVAILABLE"
