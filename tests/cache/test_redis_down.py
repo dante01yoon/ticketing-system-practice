@@ -7,7 +7,7 @@ import subprocess
 import sys
 
 from cachelib import ROOT, REDIS_URL, redis_stopped, run_server, wait_redis
-from helpers import gates, hold_burst, statuses
+from helpers import fire, gates, statuses
 
 
 def _pytest(*paths, timeout=900):
@@ -25,18 +25,23 @@ def test_concurrency_suite_passes_while_redis_is_stopped(redis_on):
 
 
 def test_seatmap_and_hold_work_without_redis(redis_on):
+    # 9장: 입장권은 Redis 가 산 서버가 먼저 발급한다 (서명 검증은 Redis 없이: 같은 서명 키, 같은 DB)
+    with run_server(REDIS_URL) as issuer:
+        users = [f"user-{i}" for i in range(50)] + ["viewer"]
+        heads = issuer.entry_headers_for(users)
+        cid = issuer.concert_id()
     with redis_stopped():
-        with run_server(REDIS_URL) as s:  # Redis 없이 앱이 시작에 성공해야 한다
+        with run_server(REDIS_URL, reset=False) as s:  # Redis 없이 앱이 시작에 성공해야 한다
             import httpx
 
-            concerts = httpx.get(f"{s.base_url}/concerts", timeout=30).json()["items"]
-            url = f"{s.base_url}/concerts/{concerts[0]['id']}/seats"
+            url = f"{s.base_url}/concerts/{cid}/seats"
             for _ in range(2):  # 캐시가 없으니 계속 MISS
-                r = httpx.get(url, timeout=30)
+                r = httpx.get(url, headers=heads["viewer"], timeout=30)
                 assert r.status_code == 200, r.text
                 assert r.headers.get("X-Cache") == "MISS"
-            sid = s.seat_ids()["B1"]
-            results = hold_burst(s.base_url, sid, 50)
+            sid = s.seat_ids(heads["viewer"])["B1"]
+            reqs = [("POST", f"/seats/{sid}/hold", heads[f"user-{i}"], None) for i in range(50)]
+            results = fire(s.base_url, reqs)
             info = f"상태 {statuses(results)} · 관문 {gates(results)}"
             assert not [r for r in results if r["status"] >= 500], info
             assert statuses(results) == {201: 1, 409: 49}, info

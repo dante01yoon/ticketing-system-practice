@@ -14,6 +14,8 @@ import pytest
 ROOT = Path(__file__).resolve().parents[2]
 sys.path.insert(0, str(ROOT / "tests" / "api"))
 sys.path.insert(0, str(ROOT / "tests" / "concurrency"))
+sys.path.insert(0, str(ROOT / "tests"))
+from entrylib import QUEUE_ENV, EntryMixin  # noqa: E402
 
 REDIS_URL = os.environ.get("REDIS_URL", "redis://localhost:6379/0")
 DEAD_REDIS_URL = "redis://127.0.0.1:1/0"  # 아무도 듣지 않는 포트: 연결 거부
@@ -80,31 +82,30 @@ def _raise_fd_limit(want=8192):
         pass
 
 
-class Server:
+class Server(EntryMixin):
     def __init__(self, base_url, workers):
         self.base_url = base_url
         self.workers = workers
 
-    def seat_ids(self):
-        concerts = httpx.get(f"{self.base_url}/concerts", timeout=30).json()["items"]
-        r = httpx.get(f"{self.base_url}/concerts/{concerts[0]['id']}/seats", timeout=30)
-        assert r.status_code == 200, r.text
-        return {s["number"]: s["id"] for s in r.json()["seats"]}
-
 
 @contextlib.contextmanager
-def run_server(redis_url, workers=4):
-    """uvicorn 워커 `workers` 개를 REDIS_URL=redis_url 로 띄운다. 시작 전 reset_db(seed=True) + FLUSHDB."""
+def run_server(redis_url, workers=4, reset=True, env_extra=None):
+    """uvicorn 워커 `workers` 개를 REDIS_URL=redis_url 로 띄운다. 시작 전 reset_db(seed=True) + FLUSHDB.
+    reset=False 면 DB·Redis 를 그대로 둔다 (앞서 받은 입장권의 공연 ID 를 유지할 때).
+    9장: 기본으로 큰 QUEUE_BATCH·ENTRY_TTL_SECONDS 를 넘겨 기다림 없이 입장한다. env_extra 로 덮어쓴다."""
     _raise_fd_limit()
     from backend.app.seed import reset_db
 
-    reset_db(seed=True)
-    if redis_up():
-        redis_client().flushdb()
+    if reset:
+        reset_db(seed=True)
+        if redis_up():
+            redis_client().flushdb()
     port = _free_port()
     env = dict(os.environ)
     env.setdefault("DATABASE_URL", "postgresql+psycopg://ticketing:ticketing@localhost:5432/ticketing")
     env["REDIS_URL"] = redis_url
+    env.update(QUEUE_ENV)
+    env.update(env_extra or {})
     log = tempfile.NamedTemporaryFile("w+", suffix=".uvicorn.log", delete=False)
     proc = subprocess.Popen(
         [sys.executable, "-m", "uvicorn", "backend.app.main:app", "--workers", str(workers), "--port", str(port)],

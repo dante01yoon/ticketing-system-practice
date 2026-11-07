@@ -73,12 +73,12 @@ def _same_as_unknown(api, send, status, code):
 
 @pytest.mark.story("US-02", "AC-4")
 def test_us02_seatmap_path_id_with_nul_is_same_404_as_unknown(api):
-    _same_as_unknown(api, lambda c, i: c.get(f"/concerts/{i}/seats"), 404, "CONCERT_NOT_FOUND")
+    _same_as_unknown(api, lambda c, i: c.get(f"/concerts/{i}/seats", headers={"X-User-Id": "u1"}), 404, "CONCERT_NOT_FOUND")
 
 
 @pytest.mark.story("US-03", "AC-6")
 def test_us03_hold_path_id_with_nul_is_same_404_as_unknown_and_changes_nothing(api):
-    _same_as_unknown(api, lambda c, i: c.post(f"/seats/{i}/hold", headers={"X-User-Id": "u1"}), 404, "SEAT_NOT_FOUND")
+    _same_as_unknown(api, lambda c, i: c.post(f"/seats/{i}/hold", headers=api.entry_headers("u1")), 404, "SEAT_NOT_FOUND")
     assert api.status("A1") == "AVAILABLE"
 
 

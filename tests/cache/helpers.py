@@ -44,6 +44,9 @@ def gates(results):
     return dict(sorted(Counter(r["headers"].get("x-hold-gate") for r in results).items(), key=lambda kv: str(kv[0])))
 
 
-def hold_burst(base_url, seat_id, n):
-    reqs = [("POST", f"/seats/{seat_id}/hold", {"X-User-Id": f"user-{i}"}, None) for i in range(n)]
-    return fire(base_url, reqs)
+def hold_burst(server, seat_id, n):
+    """n 명(user-0..)이 같은 좌석을 동시에 홀드. 입장권은 미리 받아 둔다 (9장). server 는 Server 객체."""
+    users = [f"user-{i}" for i in range(n)]
+    heads = server.entry_headers_for(users)
+    reqs = [("POST", f"/seats/{seat_id}/hold", heads[u], None) for u in users]
+    return fire(server.base_url, reqs)

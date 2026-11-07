@@ -8,6 +8,7 @@ from starlette.testclient import TestClient
 
 T0 = datetime(2030, 1, 1, 12, 0, 0, tzinfo=timezone.utc)
 HOLD_TTL = timedelta(minutes=5)
+VIEWER = "viewer"  # 좌석맵을 구경만 하는 기본 사용자 (9장부터 좌석맵에도 X-User-Id + 입장권이 필요)
 AUTO = object()  # confirm(key=AUTO): 호출마다 새 멱등 키를 만든다. key=None 이면 헤더를 보내지 않는다.
 SEAT_NUMBERS = [f"{row}{n}" for row in "ABCDEFGHIJ" for n in range(1, 11)]
 
@@ -28,20 +29,58 @@ class Api:
         self.concert_id = None
         self._seat_ids = {}
         self._keys = itertools.count(1)
+        self._entries = {}  # (user, concert_id) -> (entry_token, entry_expires_at)
 
     # --- 요청 ---
     @staticmethod
     def _h(user):
         return {} if user is None else {"X-User-Id": user}
 
+    # --- 입장권 (9장, docs/queue.md): 좌석맵·홀드를 부르기 전에 대기열에서 받아 붙인다 ---
+    def entry(self, user, concert_id=None):
+        """user 의 유효한 입장권. 가짜 시계 기준으로 만료됐거나 없으면 POST /concerts/{id}/queue 로 새로 받는다.
+        사용자가 없거나(None·빈 값·NUL) 공연이 없으면 None (입장권 없이 보내 서버의 401·404 를 그대로 본다)."""
+        cid = concert_id or self.concert_id
+        if user is None or not user.strip() or "\x00" in user or cid is None:
+            return None
+        cached = self._entries.get((user, cid))
+        if cached and self.clock.now < cached[1]:
+            return cached[0]
+        r = TestClient(self.app).post(f"/concerts/{cid}/queue", headers={"X-User-Id": user})
+        if r.status_code == 404 and cid != self.concert_id:
+            return None  # 일부러 없는 공연을 부른 호출: 서버의 404 를 그대로 보려고 입장권 없이 보낸다
+        if r.status_code == 503 and r.json().get("code") == "QUEUE_UNAVAILABLE":
+            # Redis 가 없을 때만: 서버와 같은 서명의 입장권을 직접 발급한다 (docs/queue.md ④ 테스트용 접점)
+            from backend.app.queue import issue_entry_token
+
+            expires = self.clock.now + timedelta(seconds=120)
+            token = issue_entry_token(user, cid, expires)
+            self._entries[(user, cid)] = (token, expires)
+            return token
+        # 그 밖의 실패(기본 공연의 대기열 404 포함)는 폴백 없이 실패로 드러낸다
+        assert r.status_code in (200, 201), f"대기열 입장 실패: {r.status_code} {r.text}"
+        body = r.json()
+        assert body["status"] == "ADMITTED" and body["entry_token"], f"헬퍼는 바로 입장할 수 있어야 함(QUEUE_BATCH 를 크게): {body}"
+        self._entries[(user, cid)] = (body["entry_token"], parse_dt(body["entry_expires_at"]))
+        return body["entry_token"]
+
+    def entry_headers(self, user, concert_id=None):
+        """X-User-Id + X-Entry-Token 헤더 (사용자가 없으면 빈 dict, 입장권을 못 받으면 X-User-Id 만)."""
+        headers = self._h(user)
+        token = self.entry(user, concert_id)
+        if token is not None:
+            headers["X-Entry-Token"] = token
+        return headers
+
     def concerts(self, user=None):
         return self.client.get("/concerts", headers=self._h(user))
 
-    def seatmap(self, concert_id=None, user=None):
-        return self.client.get(f"/concerts/{concert_id or self.concert_id}/seats", headers=self._h(user))
+    def seatmap(self, concert_id=None, user=VIEWER):
+        cid = concert_id or self.concert_id
+        return self.client.get(f"/concerts/{cid}/seats", headers=self.entry_headers(user, cid))
 
     def hold(self, seat_id, user="u1", client=None):
-        return (client or self.client).post(f"/seats/{seat_id}/hold", headers=self._h(user))
+        return (client or self.client).post(f"/seats/{seat_id}/hold", headers=self.entry_headers(user))
 
     def confirm(self, seat_id, user="u1", client=None, key=AUTO):
         """POST /bookings. key 기본값은 호출마다 새 멱등 키, None 이면 Idempotency-Key 헤더 없음."""

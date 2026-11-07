@@ -5,7 +5,7 @@ import uuid
 from datetime import datetime, timedelta
 from typing import Callable, Literal
 
-from fastapi import Depends, FastAPI, Request
+from fastapi import Depends, FastAPI, Header, Request
 from fastapi.exceptions import RequestValidationError
 from fastapi.responses import JSONResponse, Response
 from pydantic import BaseModel, field_validator
@@ -13,7 +13,7 @@ from sqlalchemy import select
 from sqlalchemy.exc import IntegrityError
 from starlette.exceptions import HTTPException as StarletteHTTPException
 
-from . import cache
+from . import cache, queue
 from .db import SessionLocal
 from .deps import get_now, require_idempotency_key, require_user_id
 from .errors import ApiError
@@ -149,12 +149,14 @@ def _confirm_once(seat_id: str, user_id: str, key: str, clock: Callable[[], date
         return done(201, booking)
 
 
-def _hold_db(seat_id: str, user_id: str, clock: Callable[[], datetime]):
+def _hold_db(seat_id: str, user_id: str, clock: Callable[[], datetime], entry_concert: str):
     """홀드의 DB 판단. (응답, concert_id, held_at)을 돌려준다. 반환 시점에 커밋은 끝나 있다."""
     with SessionLocal() as db, db.begin():
         seat = _lock_seat(db, seat_id)  # 행 잠금: 같은 좌석의 동시 요청은 직렬화된다
         now = clock()  # 잠금 뒤에 읽는다
         concert_id = seat.concert_id
+        if concert_id != entry_concert:
+            raise ApiError(403, "ENTRY_TOKEN_INVALID", "입장권이 올바르지 않습니다.")
         if seat.status == "SOLD":
             raise ApiError(409, "SEAT_ALREADY_SOLD", "이미 판매된 좌석입니다.")
         if _is_live_hold(seat, now):
@@ -215,7 +217,8 @@ class AppIdMiddleware:
 
 
 def create_app() -> FastAPI:
-    app = FastAPI(title="Ticketing API (MVP)", version="0.2.0")
+    app = FastAPI(title="Ticketing API (MVP)", version="0.3.0")
+    app.state.queue_cfg = queue.QueueConfig.from_env()
 
     @app.exception_handler(ApiError)
     async def _api_error(_: Request, exc: ApiError):
@@ -237,7 +240,18 @@ def create_app() -> FastAPI:
             return {"items": [{"id": c.id, "title": c.title, "starts_at": _iso(c.starts_at)} for c in rows]}
 
     @app.get("/concerts/{concert_id}/seats")
-    def seat_map(concert_id: str, now: datetime = Depends(get_now)):
+    def seat_map(
+        request: Request,
+        concert_id: str,
+        user_id: str = Depends(require_user_id),
+        entry_token: str | None = Header(default=None, alias="X-Entry-Token"),
+        now: datetime = Depends(get_now),
+    ):
+        # 판단 순서: 401(user) → 404(공연) → 403(입장권) → 캐시 → DB
+        with SessionLocal() as db:
+            if "\x00" in concert_id or db.get(Concert, concert_id) is None:
+                raise ApiError(404, "CONCERT_NOT_FOUND", "공연을 찾을 수 없습니다.")
+        queue.check_token(request.app.state.queue_cfg, entry_token, user_id, now, concert_id)
         cached = None if "\x00" in concert_id else cache.seatmap_get(concert_id, now)
         if cached is not None:
             return Response(cached, media_type="application/json", headers={"X-Cache": "HIT"})
@@ -261,10 +275,60 @@ def create_app() -> FastAPI:
         cache.seatmap_put(concert_id, body, earliest)
         return Response(body, media_type="application/json", headers={"X-Cache": "MISS"})
 
+    def _concert_exists(concert_id: str) -> bool:
+        if "\x00" in concert_id:
+            return False
+        with SessionLocal() as db:
+            return db.get(Concert, concert_id) is not None
+
+    def _queue_response(result, status: int) -> JSONResponse:
+        body, _, retry_after = result
+        headers = {"Retry-After": str(retry_after)} if retry_after is not None else None
+        return JSONResponse(body, status_code=status, headers=headers)
+
+    @app.post("/concerts/{concert_id}/queue")
+    def join_queue(
+        request: Request,
+        concert_id: str,
+        user_id: str = Depends(require_user_id),
+        clock: Callable[[], datetime] = Depends(lock_clock),
+    ):
+        if not _concert_exists(concert_id):
+            raise ApiError(404, "CONCERT_NOT_FOUND", "공연을 찾을 수 없습니다.")
+        result = queue.ticket(request.app.state.queue_cfg, concert_id, user_id, clock(), join=True)
+        return _queue_response(result, 201 if result[1] else 200)
+
+    @app.get("/concerts/{concert_id}/queue/me")
+    def my_queue_status(
+        request: Request,
+        concert_id: str,
+        user_id: str = Depends(require_user_id),
+        clock: Callable[[], datetime] = Depends(lock_clock),
+    ):
+        result = None if "\x00" in concert_id else queue.ticket(
+            request.app.state.queue_cfg, concert_id, user_id, clock(), join=False
+        )
+        if result is None:
+            raise ApiError(404, "QUEUE_TICKET_NOT_FOUND", "이 공연에 대기열 번호가 없습니다.")
+        return _queue_response(result, 200)
+
     @app.post("/seats/{seat_id}/hold", status_code=201)
     def hold_seat(
-        seat_id: str, user_id: str = Depends(require_user_id), clock: Callable[[], datetime] = Depends(lock_clock)
+        request: Request,
+        seat_id: str,
+        user_id: str = Depends(require_user_id),
+        entry_token: str | None = Header(default=None, alias="X-Entry-Token"),
+        clock: Callable[[], datetime] = Depends(lock_clock),
     ):
+        # 입장권(401 다음, Redis 관문 전): 없음·위조·남의 것·만료는 여기서 403
+        entry_concert = queue.check_token(request.app.state.queue_cfg, entry_token, user_id, clock())
+        # 다른 공연의 입장권은 좌석 상태·Redis 표시와 무관하게 관문 전에 403 (좌석→공연은 불변이라 가벼운 조회로 확인).
+        # 알 수 없는 좌석은 건너뛰고 기존대로 관문→DB에서 404.
+        if "\x00" not in seat_id:
+            with SessionLocal() as db:
+                seat_concert = db.execute(select(Seat.concert_id).where(Seat.id == seat_id)).scalar_one_or_none()
+            if seat_concert is not None and seat_concert != entry_concert:
+                raise ApiError(403, "ENTRY_TOKEN_INVALID", "입장권이 올바르지 않습니다.")
         # Redis 관문: DB 트랜잭션 전에 원자적으로 확인+표시. 이미 잡힌 좌석은 DB에 가지 않고 거절한다.
         gate = cache.hold_gate(seat_id, user_id, clock())
         if gate.reject_code is not None:
@@ -273,7 +337,7 @@ def create_app() -> FastAPI:
                 {"code": gate.reject_code, "message": msg}, status_code=409, headers={"X-Hold-Gate": "REDIS"}
             )
         try:
-            resp, concert_id, held_at = _hold_db(seat_id, user_id, clock)
+            resp, concert_id, held_at = _hold_db(seat_id, user_id, clock, entry_concert)
         except ApiError as e:
             cache.hold_revert(seat_id, gate)
             return JSONResponse(

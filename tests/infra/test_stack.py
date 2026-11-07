@@ -8,7 +8,7 @@ import httpx
 import psycopg
 import pytest
 
-from conftest import APPS, BASE, ROOT, fresh_user, get_concerts, stopped_app
+from conftest import APPS, BASE, ROOT, entry_headers, fresh_user, get_concerts, stopped_app
 
 NGINX_CONF = ROOT / "deploy" / "nginx" / "nginx.conf"
 
@@ -117,10 +117,11 @@ def test_same_idempotency_key_retries_make_one_booking_with_app_down(seeded, cli
     user = fresh_user()
     h = {"X-User-Id": user}
     cid = get_concerts(client).json()["items"][0]["id"]
-    seat = client.get(f"{BASE}/concerts/{cid}/seats", headers={"X-User-Id": fresh_user()}).json()["seats"][0]
+    seat = client.get(f"{BASE}/concerts/{cid}/seats", headers=entry_headers(client, fresh_user(), cid)).json()["seats"][0]
+    hold_h = entry_headers(client, user, cid)  # 9장: 입장권은 서명 검증이라 어느 앱에서나 통한다
     with stopped_app("app2"):
         # 홀드: Nginx 가 POST 를 대신 재전송하지 않으므로 5xx 면 클라이언트가 다시 보낸다
-        _until(lambda: client.post(f"{BASE}/seats/{seat['id']}/hold", headers=h), lambda r: r.status_code == 201)
+        _until(lambda: client.post(f"{BASE}/seats/{seat['id']}/hold", headers=hold_h), lambda r: r.status_code == 201)
         key = {"Idempotency-Key": f"infra-key-{user}", **h}
         first = _until(lambda: client.post(f"{BASE}/bookings", json={"seat_id": seat["id"]}, headers=key), lambda r: r.status_code in (200, 201))
         replays = [client.post(f"{BASE}/bookings", json={"seat_id": seat["id"]}, headers=key) for _ in range(4)]

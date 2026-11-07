@@ -62,6 +62,13 @@ uv run pytest                                        # 전체 테스트
 ## 8장: Redis 캐시와 홀드 관문 (docs/cache.md)
 - 패키지 `redis`(redis-py) 추가됨. Redis 주소는 `REDIS_URL`, 기본 `redis://localhost:6379/0`(compose `redis` 서비스, 호스트 6379).
 - `reset_db()`는 DB와 함께 `REDIS_URL`의 Redis DB도 `FLUSHDB`한다(Redis가 꺼져 있으면 넘어감).
-- 좌석맵 200 응답 헤더 `X-Cache: HIT|MISS`, 홀드 응답(401 제외) 헤더 `X-Hold-Gate: REDIS|DB`.
+- 좌석맵 200 응답 헤더 `X-Cache: HIT|MISS`, 홀드 응답(401·입장권 403 제외) 헤더 `X-Hold-Gate: REDIS|DB`.
 - 테스트는 Redis 키 이름·값 형식을 가정하지 않는다(필요하면 `FLUSHDB`만 쓴다). 동작은 헤더와 API 응답으로 확인한다.
 - Redis 만료 판단도 `get_now`(테스트의 가짜 시각)만 쓴다. Redis TTL은 저장 정리와 앱이 죽었을 때의 임대에만 쓴다.
+
+## 9장: 가상 대기열과 입장권 (docs/queue.md)
+- 새 경로 `POST /concerts/{id}/queue`, `GET /concerts/{id}/queue/me`. 좌석맵·홀드는 `X-User-Id` + `X-Entry-Token` 필요(403 `ENTRY_TOKEN_*`).
+- 설정은 환경 변수(`QUEUE_BATCH`·`QUEUE_INTERVAL_SECONDS`·`ENTRY_TTL_SECONDS`·`ENTRY_TOKEN_SECRET`)를 `create_app()` 때 읽는다.
+- 전광판·입장권 만료 판단은 `get_now`만 쓴다(가짜 시계를 간격만큼 옮기면 전광판이 한 묶음 오른다).
+- 테스트는 대기열 Redis 키 이름·입장권 형식을 가정하지 않는다(변조 테스트는 받은 값의 일부를 바꾸는 것만).
+- 테스트 접점 `backend.app.queue.issue_entry_token(user_id, concert_id, expires_at) -> str`: 대기열이 503일 때만 헬퍼가 쓴다(docs/queue.md ④).

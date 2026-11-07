@@ -6,6 +6,7 @@
 """
 import contextlib
 import itertools
+import os
 import subprocess
 import time
 import uuid
@@ -56,8 +57,20 @@ def wait_ready(expected_apps, timeout=90.0):
     pytest.fail(f"{timeout:.0f}초 안에 {BASE} 가 준비되지 않음 (필요: {sorted(expected_apps)}, 본 앱: {sorted(x for x in seen if x)}, 마지막: {last})", pytrace=False)
 
 
+def entry_headers(client, user, concert_id):
+    """9장: 대기열에서 입장권을 받아 좌석맵·홀드용 헤더를 만든다 (compose 는 큰 QUEUE_BATCH 로 바로 입장)."""
+    r = client.post(f"{BASE}/concerts/{concert_id}/queue", headers={"X-User-Id": user})
+    assert r.status_code in (200, 201), f"대기열 입장 실패: {r.status_code} {r.text[:200]}"
+    body = r.json()
+    assert body["status"] == "ADMITTED" and body["entry_token"], body
+    return {"X-User-Id": user, "X-Entry-Token": body["entry_token"]}
+
+
 @pytest.fixture(scope="session")
 def stack():
+    # 9장: docker-compose.yml 이 ${QUEUE_BATCH:-100} 식으로 호스트 값을 받는다. 기다림 없이 입장하도록 크게
+    os.environ.setdefault("QUEUE_BATCH", "1000000")
+    os.environ.setdefault("ENTRY_TTL_SECONDS", "3600")
     up = compose("up", "-d", "--build", "--wait", check=False)  # --wait 가 안 되는 서비스가 있어도 아래에서 직접 판정
     r = compose("ps", "--format", "{{.Service}}", check=True)
     running = set(r.stdout.split())

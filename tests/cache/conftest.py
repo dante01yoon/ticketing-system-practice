@@ -23,7 +23,8 @@ def redis_on():
 
 # ---------- 인프로세스 앱 (가짜 시계) ----------
 @pytest.fixture
-def api(redis_on):
+def api(redis_on, monkeypatch):
+    monkeypatch.setenv("QUEUE_BATCH", "100000")  # 9장: 헬퍼가 기다림 없이 입장
     from backend.app.deps import get_now
     from backend.app.main import create_app
     from backend.app.seed import reset_db

@@ -21,6 +21,12 @@ def _build(seed):
     return Api(app, clock)
 
 
+@pytest.fixture(autouse=True)
+def _big_queue_batch(monkeypatch):
+    """9장: 헬퍼가 기다림 없이 바로 입장하도록 한 묶음을 크게 (create_app() 전에 읽는다)."""
+    monkeypatch.setenv("QUEUE_BATCH", "100000")
+
+
 @pytest.fixture
 def api():
     return _build(seed=True).discover()

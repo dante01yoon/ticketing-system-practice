@@ -13,7 +13,8 @@ CONFIRMS = 20
 @pytest.mark.story("US-03", "AC-8")
 def test_500_users_hold_same_seat_exactly_one_wins(server):
     sid = server.seat_ids()["A1"]
-    reqs = [("POST", f"/seats/{sid}/hold", {"X-User-Id": f"user-{i}"}, None) for i in range(HOLDERS)]
+    heads = server.entry_headers_for([f"user-{i}" for i in range(HOLDERS)])  # 9장: 입장권을 먼저 받는다
+    reqs = [("POST", f"/seats/{sid}/hold", heads[f"user-{i}"], None) for i in range(HOLDERS)]
     results, total = fire(server.base_url, reqs)
     dist = distribution(results)
     info = f"워커 {server.workers} · 상태 분포 {dist} · {timing_summary(results, total)}"
@@ -34,7 +35,7 @@ def _db_statuses(sid):
 def _hold_and_confirm(server, number, user):
     sid = server.seat_ids()[number]
     hdr = {"X-User-Id": user}
-    held, _ = fire(server.base_url, [("POST", f"/seats/{sid}/hold", hdr, None)], warm=False)
+    held, _ = fire(server.base_url, [("POST", f"/seats/{sid}/hold", server.entry_headers(user), None)], warm=False)
     assert held[0]["status"] == 201, held[0]["text"]
     conf, _ = fire(server.base_url, [("POST", "/bookings", {**hdr, "Idempotency-Key": f"k-{number}"}, {"seat_id": sid})], warm=False)
     assert conf[0]["status"] == 201, conf[0]["text"]
@@ -45,7 +46,7 @@ def _hold_and_confirm(server, number, user):
 def test_20_concurrent_confirms_with_different_keys_make_one_booking(server):
     sid = server.seat_ids()["A2"]  # 다른 테스트와 다른 좌석
     hdr = {"X-User-Id": "buyer-u1"}
-    held, _ = fire(server.base_url, [("POST", f"/seats/{sid}/hold", hdr, None)], warm=False)
+    held, _ = fire(server.base_url, [("POST", f"/seats/{sid}/hold", server.entry_headers("buyer-u1"), None)], warm=False)
     assert held[0]["status"] == 201, held[0]["text"]
 
     reqs = [("POST", "/bookings", {**hdr, "Idempotency-Key": f"key-{i}"}, {"seat_id": sid}) for i in range(CONFIRMS)]
@@ -64,7 +65,7 @@ def test_20_concurrent_confirms_with_different_keys_make_one_booking(server):
 def test_20_concurrent_confirms_with_same_key_return_identical_response(server):
     sid = server.seat_ids()["A3"]
     hdr = {"X-User-Id": "buyer-u1", "Idempotency-Key": "same-key"}
-    held, _ = fire(server.base_url, [("POST", f"/seats/{sid}/hold", {"X-User-Id": "buyer-u1"}, None)], warm=False)
+    held, _ = fire(server.base_url, [("POST", f"/seats/{sid}/hold", server.entry_headers("buyer-u1"), None)], warm=False)
     assert held[0]["status"] == 201, held[0]["text"]
 
     results, total = fire(server.base_url, [("POST", "/bookings", hdr, {"seat_id": sid})] * CONFIRMS)

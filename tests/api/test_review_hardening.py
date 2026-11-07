@@ -90,7 +90,7 @@ def test_us02_ac1_large_concert_seatmap_orders_rows_a_to_z_then_aa(api):
 
     cid = add_concert("큰 공연", T0, seats=261)
     # 서버 예외를 테스트 예외가 아니라 500 응답으로 받아 상태 코드로 판단한다
-    r = TestClient(api.app, raise_server_exceptions=False).get(f"/concerts/{cid}/seats")
+    r = TestClient(api.app, raise_server_exceptions=False).get(f"/concerts/{cid}/seats", headers=api.entry_headers("viewer", cid))
     assert r.status_code == 200, f"{r.status_code} {r.text[:200]}"
     numbers = [s["number"] for s in r.json()["seats"]]
     assert len(numbers) == 261

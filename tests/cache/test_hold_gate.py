@@ -4,8 +4,8 @@ from datetime import timedelta
 import pytest
 
 from apihelpers import HOLD_TTL, T0, assert_error
-from cachelib import DEAD_REDIS_URL, redis_client, run_server
-from helpers import gates, hold_burst, statuses
+from cachelib import DEAD_REDIS_URL, REDIS_URL, redis_client, run_server
+from helpers import fire, gates, hold_burst, statuses
 
 USERS = 200
 
@@ -21,14 +21,19 @@ def _check_burst(results, expected_gates):
 def test_200_users_one_wins_and_redis_rejects_199_before_db(server_redis):
     sid = server_redis.seat_ids()["A1"]
     assert server_redis.workers >= 2
-    results = hold_burst(server_redis.base_url, sid, USERS)
+    results = hold_burst(server_redis, sid, USERS)
     _check_burst(results, {"DB": 1, "REDIS": USERS - 1})
 
 
 def test_same_burst_without_redis_all_go_to_db(redis_on):
-    with run_server(DEAD_REDIS_URL) as s:  # 닿지 않는 REDIS_URL: 앱은 시작에 성공해야 한다
-        sid = s.seat_ids()["A1"]
-        results = hold_burst(s.base_url, sid, USERS)
+    # 9장: Redis 가 죽은 서버는 대기열을 못 하므로, 같은 서명 키를 쓰는 Redis 가 산 서버가 입장권을 먼저 발급한다
+    with run_server(REDIS_URL) as issuer:
+        users = [f"user-{i}" for i in range(USERS)] + ["viewer"]
+        heads = issuer.entry_headers_for(users)
+    with run_server(DEAD_REDIS_URL, reset=False) as s:  # 닿지 않는 REDIS_URL: 앱은 시작에 성공해야 한다
+        sid = s.seat_ids(heads["viewer"])["A1"]
+        reqs = [("POST", f"/seats/{sid}/hold", heads[f"user-{i}"], None) for i in range(USERS)]
+        results = fire(s.base_url, reqs)
         _check_burst(results, {"DB": USERS})
 
 

@@ -14,6 +14,8 @@ import time
 import httpx
 import pytest
 
+from entrylib import QUEUE_ENV, EntryMixin
+
 ROOT = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 START_TIMEOUT_S = 60
 
@@ -37,27 +39,16 @@ def _raise_fd_limit(want=8192):
         pass
 
 
-class Server:
-    """서버 프로세스 핸들. 공연·좌석 ID 는 캐시하지 않고 매번 API 로 찾는다
+class Server(EntryMixin):
+    """서버 프로세스 핸들. 공연·좌석 ID 와 입장권은 캐시하지 않고 매번 API 로 찾는다
     (다른 테스트의 reset_db 로 ID 가 바뀌어도 순서와 무관하게 동작하도록)."""
 
     def __init__(self, base_url, workers):
         self.base_url = base_url
         self.workers = workers
 
-    def _seatmap(self):
-        concerts = httpx.get(f"{self.base_url}/concerts", timeout=30).json()["items"]
-        assert concerts, "시드 공연이 없습니다"
-        r = httpx.get(f"{self.base_url}/concerts/{concerts[0]['id']}/seats", timeout=30)
-        assert r.status_code == 200, r.text
-        return r.json()["seats"]
-
-    def seat_ids(self):
-        """GET /concerts → 좌석맵으로 찾은 {좌석 번호: 좌석 ID}. ID 하드코딩·캐시 없음."""
-        return {s["number"]: s["id"] for s in self._seatmap()}
-
     def seat_status(self, seat_id):
-        return next(s["status"] for s in self._seatmap() if s["id"] == seat_id)
+        return next(s["status"] for s in self.seatmap() if s["id"] == seat_id)
 
 
 @pytest.fixture(scope="session")
@@ -70,6 +61,7 @@ def server():
     port = _free_port()
     env = dict(os.environ)
     env.setdefault("DATABASE_URL", "postgresql+psycopg://ticketing:ticketing@localhost:5432/ticketing")
+    env.update(QUEUE_ENV)  # 9장: 기다림 없이 입장
     log = tempfile.NamedTemporaryFile("w+", suffix=".uvicorn.log", delete=False)
     proc = subprocess.Popen(
         [sys.executable, "-m", "uvicorn", "backend.app.main:app", "--workers", str(workers), "--port", str(port)],
