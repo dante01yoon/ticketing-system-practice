@@ -34,6 +34,7 @@
     "tests/k8s/test_k8s_smoke.py": "347b2da8d800eada2e5e15102999c11c751da1c21862dff5d7f718e0d1379e9c",
     "tests/k8s/test_manifests.py": "4b23163d8c2d40999e6530222cbb1acc17c71b9b0720ba6fb61410ec808dcf44",
     "tests/k8s/test_seed_safety.py": "23a3e6cba68dcea6c378ffd4701e1c343b28a298f588929a100bea97a77a40c7",
+    "tests/k8s/test_wait_schema_unit.py": "adbf1747f6318ed784b6bb2fc96c83bf634dbeb5ac4c0f2572324259b3c9bc35",
     "tests/queue/conftest.py": "9be7cfb0238ffbeaa864a4c260ceb64f731083ecd51545019cd1e9fc117d4519",
     "tests/queue/queuelib.py": "e532899e9e8ba13500f53e4a768db56ce25a44c95fdd9c4d373b99dc526ba185",
     "tests/queue/test_board.py": "bbdcc57b68817904d19df8ac844aeb9624aac2076870255ea5277ba5591c002a",
