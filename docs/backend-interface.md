@@ -72,3 +72,9 @@ uv run pytest                                        # 전체 테스트
 - 전광판·입장권 만료 판단은 `get_now`만 쓴다(가짜 시계를 간격만큼 옮기면 전광판이 한 묶음 오른다).
 - 테스트는 대기열 Redis 키 이름·입장권 형식을 가정하지 않는다(변조 테스트는 받은 값의 일부를 바꾸는 것만).
 - 테스트 접점 `backend.app.queue.issue_entry_token(user_id, concert_id, expires_at) -> str`: 대기열이 503일 때만 헬퍼가 쓴다(docs/queue.md ④).
+
+## 10장: 예매 확정 알림 (docs/events.md)
+- 패키지 `confluent-kafka` 추가됨. Kafka는 compose `events` 프로필의 `kafka`(KRaft 1대, 호스트 `localhost:9092`, `KAFKA_BOOTSTRAP`).
+- 확정 콜백과 같은 트랜잭션에서 `outbox` 한 줄. 테스트가 보는 열: `outbox(event_id, booking_id, sent_at)`, `notifications(user_id, event_id, booking_id, created_at)`.
+- 테스트 접점: `backend.app.events.relay_once(limit=100) -> int`, `backend.app.notifier.Notifier()`의 `poll_once(timeout=5.0) -> int`·`close()`.
+- `reset_db()`는 `outbox`·`notifications`도 비우지만 Kafka 토픽·오프셋은 그대로다. 테스트는 자기 사용자·예매로만 센다.

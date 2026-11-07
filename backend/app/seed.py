@@ -65,7 +65,7 @@ def reset_db(seed: bool = True) -> None:
     """마이그레이션을 head까지 적용하고 모든 데이터를 지운 뒤 seed=True면 시드를 넣는다."""
     migrate_head()
     with SessionLocal() as db, db.begin():
-        db.execute(text("TRUNCATE idempotency_keys, bookings, seats, concerts"))
+        db.execute(text("TRUNCATE idempotency_keys, bookings, seats, concerts, outbox, notifications"))
     cache.flush_db()
     if seed:
         insert_seed()

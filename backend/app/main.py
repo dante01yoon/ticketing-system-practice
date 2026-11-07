@@ -2,7 +2,7 @@ import json
 import os
 import re
 import uuid
-from datetime import datetime, timedelta
+from datetime import datetime, timedelta, timezone
 from typing import Callable, Literal
 
 from fastapi import Depends, FastAPI, Header, Request
@@ -17,7 +17,7 @@ from . import cache, queue
 from .db import SessionLocal
 from .deps import get_now, require_idempotency_key, require_user_id
 from .errors import ApiError
-from .models import Booking, Concert, IdempotencyKey, Seat
+from .models import Booking, Concert, IdempotencyKey, Outbox, Seat
 
 HOLD_TTL = timedelta(minutes=5)
 
@@ -400,6 +400,24 @@ def create_app() -> FastAPI:
                 elif now < booking.expires_at:
                     booking.status = "CONFIRMED"
                     seat.status = "SOLD"
+                    # 확정과 같은 트랜잭션에서 이벤트 한 줄(Kafka에는 닿지 않는다)
+                    event_id = str(uuid.uuid4())
+                    db.add(
+                        Outbox(
+                            event_id=event_id,
+                            event_type="BookingConfirmed",
+                            booking_id=booking.id,
+                            payload={
+                                "event_id": event_id,
+                                "type": "BookingConfirmed",
+                                "booking_id": booking.id,
+                                "user_id": booking.user_id,
+                                "concert_id": booking.concert_id,
+                                "seat_id": booking.seat_id,
+                                "confirmed_at": now.astimezone(timezone.utc).strftime("%Y-%m-%dT%H:%M:%S.%fZ"),
+                            },
+                        )
+                    )
                 else:
                     booking.status = "REFUND_REQUIRED"  # 좌석은 건드리지 않는다
                 db.flush()
