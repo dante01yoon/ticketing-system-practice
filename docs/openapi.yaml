@@ -170,7 +170,7 @@ paths:
         "400":
           description: |
             - `IDEMPOTENCY_KEY_REQUIRED`: Idempotency-Key 헤더가 없거나 비어 있음
-            - `IDEMPOTENCY_KEY_INVALID`: Idempotency-Key가 255자를 넘음
+            - `IDEMPOTENCY_KEY_INVALID`: Idempotency-Key가 255자를 넘거나 NUL 문자(U+0000)를 포함
           content:
             application/json:
               schema:
@@ -316,7 +316,7 @@ components:
       required: true
       description: |
         클라이언트가 만든 멱등 키(예: UUID). 사용자(X-User-Id)별로 구분한다. 없거나 비어 있으면 400 IDEMPOTENCY_KEY_REQUIRED,
-        255자를 넘으면 400 IDEMPOTENCY_KEY_INVALID (255자는 허용).
+        255자를 넘거나 NUL 문자(U+0000)가 있으면 400 IDEMPOTENCY_KEY_INVALID (255자는 허용).
       schema: { type: string, minLength: 1, maxLength: 255 }
     SeatId:
       name: seatId
@@ -327,7 +327,7 @@ components:
       name: X-User-Id
       in: header
       required: true
-      description: 모의 사용자 ID (로그인 대체). 없거나 비어 있으면 401 USER_ID_REQUIRED.
+      description: 모의 사용자 ID (로그인 대체). 없거나 비어 있거나 NUL 문자(U+0000)가 있으면 401 USER_ID_REQUIRED.
       schema: { type: string, minLength: 1 }
 
   responses:
@@ -338,7 +338,7 @@ components:
           schema:
             $ref: "#/components/schemas/Error"
     UserIdRequired:
-      description: "`USER_ID_REQUIRED`: X-User-Id 헤더가 없음"
+      description: "`USER_ID_REQUIRED`: X-User-Id 헤더가 없거나 비어 있거나 NUL 문자(U+0000) 포함"
       content:
         application/json:
           schema:

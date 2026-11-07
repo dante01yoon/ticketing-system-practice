@@ -13,12 +13,16 @@ def get_now() -> datetime:
 def require_user_id(x_user_id: str | None = Header(default=None)) -> str:
     if x_user_id is None or not x_user_id.strip():
         raise ApiError(401, "USER_ID_REQUIRED", "X-User-Id 헤더가 필요합니다.")
+    if "\x00" in x_user_id:
+        raise ApiError(401, "USER_ID_REQUIRED", "X-User-Id 헤더 값이 올바르지 않습니다.")
     return x_user_id
 
 
 def require_idempotency_key(idempotency_key: str | None = Header(default=None)) -> str:
     if idempotency_key is None or not idempotency_key.strip():
         raise ApiError(400, "IDEMPOTENCY_KEY_REQUIRED", "Idempotency-Key 헤더가 필요합니다.")
+    if "\x00" in idempotency_key:
+        raise ApiError(400, "IDEMPOTENCY_KEY_INVALID", "Idempotency-Key에 NUL 문자를 쓸 수 없습니다.")
     if len(idempotency_key) > 255:
         raise ApiError(400, "IDEMPOTENCY_KEY_INVALID", "Idempotency-Key는 255자 이하여야 합니다.")
     return idempotency_key

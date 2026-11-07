@@ -32,6 +32,9 @@ uv run pytest                                        # 전체 테스트
 
 ## 계약에서 놓치기 쉬운 점
 - `X-User-Id`가 없거나 빈 문자열이면 **401** `{code: USER_ID_REQUIRED}` (FastAPI 기본 422가 아님).
+- 헤더의 NUL 문자(U+0000): PostgreSQL text에 넣을 수 없어 그대로 두면 500이 난다. `X-User-Id`에 있으면 401 `USER_ID_REQUIRED`,
+  `Idempotency-Key`에 있으면 400 `IDEMPOTENCY_KEY_INVALID`. DB에 닿기 전에 거르고 상태·멱등 기록을 남기지 않는다.
+  판단 순서는 그대로(X-User-Id → Idempotency-Key → 본문).
 - 오류 본문은 항상 `{code, message}` (FastAPI 기본 `{detail}`이 아님). 상태 코드·`code` 값은 `docs/openapi.yaml`.
 - 좌석맵에서 만료된 HELD는 `AVAILABLE`, 응답에 홀드한 사용자 정보 없음.
 - 만료: `get_now() >= held_at + 5분`이면 만료(5분 정각부터 다시 홀드 가능). 4분 59초는 유효.
