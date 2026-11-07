@@ -2,7 +2,7 @@
 
 콘서트 좌석 예매 시스템을 AI 에이전트 팀(Claude Code + OpenRig + Herdr)과 함께 만들며 백엔드 시스템 설계를 배우는 실습 저장소예요.
 
-- 서버: Python FastAPI · PostgreSQL · Redis
+- 서버: Python FastAPI · PostgreSQL · Redis · Nginx · Kafka · 쿠버네티스(minikube) · Locust
 
 ## 장별 프롬프트
 
@@ -15,6 +15,12 @@
 | 3장 첫 서버 | [chapters/ch03-mvp/PROMPT.md](chapters/ch03-mvp/PROMPT.md) |
 | 4장 트래픽 계산 | [chapters/ch04-traffic/PROMPT.md](chapters/ch04-traffic/PROMPT.md) |
 | 5장 동시성 | [chapters/ch05-concurrency/PROMPT.md](chapters/ch05-concurrency/PROMPT.md) |
+| 6장 홀드 만료·모의 결제 | [chapters/ch06-hold/PROMPT.md](chapters/ch06-hold/PROMPT.md) |
+| 7장 Nginx·429 | [chapters/ch07-nginx/PROMPT.md](chapters/ch07-nginx/PROMPT.md) |
+| 8장 Redis 캐시·홀드 관문 | [chapters/ch08-redis/PROMPT.md](chapters/ch08-redis/PROMPT.md) |
+| 9장 가상 대기열 | [chapters/ch09-queue/PROMPT.md](chapters/ch09-queue/PROMPT.md) |
+| 10장 Kafka 알림 | [chapters/ch10-kafka/PROMPT.md](chapters/ch10-kafka/PROMPT.md) |
+| 11장 쿠버네티스·부하 테스트 | [chapters/ch11-k8s/PROMPT.md](chapters/ch11-k8s/PROMPT.md) |
 
 ## OpenRig 팀 띄우기
 
