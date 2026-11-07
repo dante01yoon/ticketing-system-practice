@@ -15,44 +15,68 @@ services:
     volumes:
       - pgdata:/var/lib/postgresql/data
 
+  redis:
+    image: redis:7.4-alpine
+    command: ["redis-server", "--save", "", "--appendonly", "no"]
+    ports:
+      - "6379:6379"
+
   app1:
     build:
       context: .
       dockerfile: deploy/app.Dockerfile
+    networks:
+      default:
+        ipv4_address: 172.31.77.11
     environment:
       APP_ID: app1
       DATABASE_URL: postgresql+psycopg://ticketing:ticketing@db:5432/ticketing
       DB_POOL_SIZE: "8"
       DB_MAX_OVERFLOW: "4"
+      REDIS_URL: redis://redis:6379/0
     depends_on:
       db:
         condition: service_healthy
+      redis:
+        condition: service_started
 
   app2:
     build:
       context: .
       dockerfile: deploy/app.Dockerfile
+    networks:
+      default:
+        ipv4_address: 172.31.77.12
     environment:
       APP_ID: app2
       DATABASE_URL: postgresql+psycopg://ticketing:ticketing@db:5432/ticketing
       DB_POOL_SIZE: "8"
       DB_MAX_OVERFLOW: "4"
+      REDIS_URL: redis://redis:6379/0
     depends_on:
       db:
         condition: service_healthy
+      redis:
+        condition: service_started
 
   app3:
     build:
       context: .
       dockerfile: deploy/app.Dockerfile
+    networks:
+      default:
+        ipv4_address: 172.31.77.13
     environment:
       APP_ID: app3
       DATABASE_URL: postgresql+psycopg://ticketing:ticketing@db:5432/ticketing
       DB_POOL_SIZE: "8"
       DB_MAX_OVERFLOW: "4"
+      REDIS_URL: redis://redis:6379/0
     depends_on:
       db:
         condition: service_healthy
+      redis:
+        condition: service_started
 
   nginx:
     image: nginx:1.27.5-alpine
@@ -64,6 +88,12 @@ services:
       - app1
       - app2
       - app3
+
+networks:
+  default:
+    ipam:
+      config:
+        - subnet: 172.31.77.0/24
 
 volumes:
   pgdata:

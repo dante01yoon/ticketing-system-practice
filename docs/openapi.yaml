@@ -19,6 +19,8 @@ info:
       사용자(`X-User-Id`, 없으면 IP)별 초당 5건·burst 10을 넘으면 모든 경로에서 Nginx가
       429 `RATE_LIMITED` + `Retry-After` 헤더로 답한다(앱의 401·400·422보다 먼저).
       앱에 전달된 POST는 Nginx가 다시 보내지 않으므로 5xx를 받으면 확정은 같은 Idempotency-Key로 다시 보낸다.
+    - 캐시(8장, docs/cache.md): 좌석맵은 Redis에 5초 캐시되며 `X-Cache: HIT|MISS`로 알린다. 홀드는 Redis 관문을 먼저 거치고,
+      DB까지 갔는지를 `X-Hold-Gate: REDIS|DB`로 알린다. 판단 기준은 언제나 PostgreSQL이며 Redis가 꺼져도 결과 규칙은 같다.
     - 아직 정하지 않은 동작(PRD 열린 질문 1): 한 사용자의 여러 좌석 홀드.
 
 servers:
@@ -58,6 +60,9 @@ paths:
       responses:
         "200":
           description: 좌석맵
+          headers:
+            X-Cache:
+              $ref: "#/components/headers/XCache"
           content:
             application/json:
               schema:
@@ -81,12 +86,18 @@ paths:
       responses:
         "200":
           description: 이미 내 유효한 홀드 — 기존 홀드를 그대로 돌려줌 (만료 시각 불변)
+          headers:
+            X-Hold-Gate:
+              $ref: "#/components/headers/XHoldGate"
           content:
             application/json:
               schema:
                 $ref: "#/components/schemas/Hold"
         "201":
           description: 홀드 성공
+          headers:
+            X-Hold-Gate:
+              $ref: "#/components/headers/XHoldGate"
           content:
             application/json:
               schema:
@@ -100,6 +111,10 @@ paths:
             홀드할 수 없는 좌석.
             - `SEAT_ALREADY_HELD`: 다른 사용자의 만료 전 홀드가 있음 (동시 요청 패배 포함)
             - `SEAT_ALREADY_SOLD`: 이미 판매됨
+            Redis 관문이 DB에 가기 전에 거절해도 같은 순간 DB가 했을 답과 같은 상태·`code`다(`X-Hold-Gate: REDIS`).
+          headers:
+            X-Hold-Gate:
+              $ref: "#/components/headers/XHoldGate"
           content:
             application/json:
               schema:
@@ -272,6 +287,18 @@ paths:
                 $ref: "#/components/schemas/Error"
 
 components:
+  headers:
+    XCache:
+      description: 좌석맵을 Redis 캐시에서 돌려줬으면 HIT, DB에서 만들었으면 MISS(Redis가 꺼져 있을 때 포함).
+      schema:
+        type: string
+        enum: [HIT, MISS]
+    XHoldGate:
+      description: 홀드 요청을 Redis 관문이 DB에 가기 전에 거절했으면 REDIS, DB 트랜잭션까지 갔으면 DB(Redis가 꺼져 있을 때 포함).
+      schema:
+        type: string
+        enum: [REDIS, DB]
+
   parameters:
     ConcertId:
       name: concertId

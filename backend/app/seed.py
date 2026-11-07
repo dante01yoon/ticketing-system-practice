@@ -6,6 +6,7 @@ from alembic import command
 from alembic.config import Config
 from sqlalchemy import text
 
+from . import cache
 from .db import SessionLocal, database_url
 from .models import Concert, Seat
 
@@ -65,6 +66,7 @@ def reset_db(seed: bool = True) -> None:
     migrate_head()
     with SessionLocal() as db, db.begin():
         db.execute(text("TRUNCATE idempotency_keys, bookings, seats, concerts"))
+    cache.flush_db()
     if seed:
         insert_seed()
 

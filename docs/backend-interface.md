@@ -55,3 +55,10 @@ uv run pytest                                        # 전체 테스트
 ## 테스트하지 않는 것 (PRD 열린 질문, 미정)
 - 한 사용자가 여러 좌석을 홀드하는 경우
 - 결제사 콜백 서명 검증, 환불 실행
+
+## 8장: Redis 캐시와 홀드 관문 (docs/cache.md)
+- 패키지 `redis`(redis-py) 추가됨. Redis 주소는 `REDIS_URL`, 기본 `redis://localhost:6379/0`(compose `redis` 서비스, 호스트 6379).
+- `reset_db()`는 DB와 함께 `REDIS_URL`의 Redis DB도 `FLUSHDB`한다(Redis가 꺼져 있으면 넘어감).
+- 좌석맵 200 응답 헤더 `X-Cache: HIT|MISS`, 홀드 응답(401 제외) 헤더 `X-Hold-Gate: REDIS|DB`.
+- 테스트는 Redis 키 이름·값 형식을 가정하지 않는다(필요하면 `FLUSHDB`만 쓴다). 동작은 헤더와 API 응답으로 확인한다.
+- Redis 만료 판단도 `get_now`(테스트의 가짜 시각)만 쓴다. Redis TTL은 저장 정리와 앱이 죽었을 때의 임대에만 쓴다.

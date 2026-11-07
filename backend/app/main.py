@@ -1,3 +1,4 @@
+import json
 import os
 import re
 import uuid
@@ -6,12 +7,13 @@ from typing import Callable, Literal
 
 from fastapi import Depends, FastAPI, Request
 from fastapi.exceptions import RequestValidationError
-from fastapi.responses import JSONResponse
+from fastapi.responses import JSONResponse, Response
 from pydantic import BaseModel, field_validator
 from sqlalchemy import select
 from sqlalchemy.exc import IntegrityError
 from starlette.exceptions import HTTPException as StarletteHTTPException
 
+from . import cache
 from .db import SessionLocal
 from .deps import get_now, require_idempotency_key, require_user_id
 from .errors import ApiError
@@ -147,6 +149,22 @@ def _confirm_once(seat_id: str, user_id: str, key: str, clock: Callable[[], date
         return done(201, booking)
 
 
+def _hold_db(seat_id: str, user_id: str, clock: Callable[[], datetime]):
+    """홀드의 DB 판단. (응답, concert_id, held_at)을 돌려준다. 반환 시점에 커밋은 끝나 있다."""
+    with SessionLocal() as db, db.begin():
+        seat = _lock_seat(db, seat_id)  # 행 잠금: 같은 좌석의 동시 요청은 직렬화된다
+        now = clock()  # 잠금 뒤에 읽는다
+        concert_id = seat.concert_id
+        if seat.status == "SOLD":
+            raise ApiError(409, "SEAT_ALREADY_SOLD", "이미 판매된 좌석입니다.")
+        if _is_live_hold(seat, now):
+            if seat.held_by == user_id:  # 자기 유효 홀드: 기존 홀드 그대로 (만료 연장 없음)
+                return JSONResponse(_hold_body(seat, seat.held_at), status_code=200), concert_id, seat.held_at
+            raise ApiError(409, "SEAT_ALREADY_HELD", "이미 홀드된 좌석입니다.")
+        seat.status, seat.held_by, seat.held_at = "HELD", user_id, now
+        return JSONResponse(_hold_body(seat, now), status_code=201), concert_id, now
+
+
 def _iso(dt: datetime) -> str:
     return dt.isoformat()
 
@@ -220,34 +238,56 @@ def create_app() -> FastAPI:
 
     @app.get("/concerts/{concert_id}/seats")
     def seat_map(concert_id: str, now: datetime = Depends(get_now)):
+        cached = None if "\x00" in concert_id else cache.seatmap_get(concert_id, now)
+        if cached is not None:
+            return Response(cached, media_type="application/json", headers={"X-Cache": "HIT"})
         with SessionLocal() as db:
             if "\x00" in concert_id or db.get(Concert, concert_id) is None:
                 raise ApiError(404, "CONCERT_NOT_FOUND", "공연을 찾을 수 없습니다.")
             seats = db.execute(select(Seat).where(Seat.concert_id == concert_id)).scalars().all()
             seats.sort(key=_seat_sort_key)
             out = []
+            earliest = None  # 유효 홀드 중 가장 이른 만료 시각(그 뒤엔 캐시가 낡는다)
             for s in seats:
                 status = s.status
-                if status == "HELD" and not _is_live_hold(s, now):
-                    status = "AVAILABLE"
+                if status == "HELD":
+                    if _is_live_hold(s, now):
+                        exp = s.held_at + HOLD_TTL
+                        earliest = exp if earliest is None else min(earliest, exp)
+                    else:
+                        status = "AVAILABLE"
                 out.append({"id": s.id, "number": s.number, "status": status})
-            return {"concert_id": concert_id, "seats": out}
+            body = json.dumps({"concert_id": concert_id, "seats": out}, ensure_ascii=False, separators=(",", ":"))
+        cache.seatmap_put(concert_id, body, earliest)
+        return Response(body, media_type="application/json", headers={"X-Cache": "MISS"})
 
     @app.post("/seats/{seat_id}/hold", status_code=201)
     def hold_seat(
         seat_id: str, user_id: str = Depends(require_user_id), clock: Callable[[], datetime] = Depends(lock_clock)
     ):
-        with SessionLocal() as db, db.begin():
-            seat = _lock_seat(db, seat_id)  # 행 잠금: 같은 좌석의 동시 요청은 직렬화된다
-            now = clock()  # 잠금 뒤에 읽는다
-            if seat.status == "SOLD":
-                raise ApiError(409, "SEAT_ALREADY_SOLD", "이미 판매된 좌석입니다.")
-            if _is_live_hold(seat, now):
-                if seat.held_by == user_id:  # 자기 유효 홀드: 기존 홀드 그대로 (만료 연장 없음)
-                    return JSONResponse(_hold_body(seat, seat.held_at), status_code=200)
-                raise ApiError(409, "SEAT_ALREADY_HELD", "이미 홀드된 좌석입니다.")
-            seat.status, seat.held_by, seat.held_at = "HELD", user_id, now
-            return _hold_body(seat, now)
+        # Redis 관문: DB 트랜잭션 전에 원자적으로 확인+표시. 이미 잡힌 좌석은 DB에 가지 않고 거절한다.
+        gate = cache.hold_gate(seat_id, user_id, clock())
+        if gate.reject_code is not None:
+            msg = "이미 판매된 좌석입니다." if gate.reject_code == "SEAT_ALREADY_SOLD" else "이미 홀드된 좌석입니다."
+            return JSONResponse(
+                {"code": gate.reject_code, "message": msg}, status_code=409, headers={"X-Hold-Gate": "REDIS"}
+            )
+        try:
+            resp, concert_id, held_at = _hold_db(seat_id, user_id, clock)
+        except ApiError as e:
+            cache.hold_revert(seat_id, gate)
+            return JSONResponse(
+                {"code": e.code, "message": e.message}, status_code=e.status, headers={"X-Hold-Gate": "DB"}
+            )
+        except BaseException:
+            cache.hold_revert(seat_id, gate)
+            raise
+        resp.headers["X-Hold-Gate"] = "DB"
+        # DB 성공(200·201) 뒤 표시는 항상 DB 진실(held_at+5분)을 반영한다. 캐시 삭제는 새 홀드(201)만.
+        cache.hold_confirm(seat_id, user_id, held_at)
+        if resp.status_code == 201:
+            cache.seatmap_invalidate(concert_id)
+        return resp
 
     @app.post("/bookings")
     def confirm_booking(
@@ -276,6 +316,7 @@ def create_app() -> FastAPI:
 
     @app.post("/payments/callback")
     def payment_callback(body: CallbackRequest, clock: Callable[[], datetime] = Depends(lock_clock)):
+        sold: tuple[str, str] | None = None
         with SessionLocal() as db, db.begin():
             probe = db.get(Booking, body.booking_id)
             if probe is None:
@@ -295,7 +336,13 @@ def create_app() -> FastAPI:
                 else:
                     booking.status = "REFUND_REQUIRED"  # 좌석은 건드리지 않는다
                 db.flush()
-            return _booking_body(booking)
+            if booking.status == "CONFIRMED":  # 방금 확정했거나 중복 콜백: 판매 표시를 (다시) 쓴다
+                sold = (seat.id, seat.concert_id)
+            result = _booking_body(booking)
+        if sold is not None:  # DB 커밋 뒤에: 판매 표시 + 좌석맵 캐시 삭제
+            cache.mark_sold(sold[0])
+            cache.seatmap_invalidate(sold[1])
+        return result
 
     # ServerErrorMiddleware(가장 바깥) 밖에 감싸야 500 응답에도 헤더가 붙는다.
     build = app.build_middleware_stack
